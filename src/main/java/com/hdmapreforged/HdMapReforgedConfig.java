@@ -32,6 +32,9 @@ public interface HdMapReforgedConfig extends Config
         position = 5)
     String friends = "friends";
 
+    @ConfigSection(name = "Miscellaneous", description = "Everything else", position = 6)
+    String misc = "misc";
+
     @ConfigItem(keyName = "showTeleports", name = "Teleports", position = 0, section = icons,
         description = "Teleport spells, items and minigame teleports")
     default boolean showTeleports()
@@ -476,5 +479,12 @@ public interface HdMapReforgedConfig extends Config
     default int routeSaveBank()
     {
         return 10;
+    }
+
+    @ConfigItem(keyName = "showVersion", name = "Show plugin version", position = 0, section = misc,
+        description = "The plugin's version in the bottom right corner of the map")
+    default boolean showVersion()
+    {
+        return true;
     }
 }

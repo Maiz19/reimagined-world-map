@@ -57,6 +57,15 @@ final class ServerCache
         }
     }
 
+    /** A version's kept files deleted, so they are fetched again. On the calling thread. */
+    void forget(String kind, String version)
+    {
+        if (KIND.matcher(kind).matches() && MapServer.isSafeVersion(version))
+        {
+            TileCache.deleteTree(root.joinSegment(kind).joinSegment(version));
+        }
+    }
+
     /** Null for a name that could leave the folder. */
     Filepath file(String kind, String version, String name)
     {

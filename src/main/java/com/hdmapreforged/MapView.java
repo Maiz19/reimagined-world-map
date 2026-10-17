@@ -12,6 +12,8 @@ import static java.lang.Math.*;
 import com.hdmapreforged.route.HousePlan;
 import java.util.concurrent.*;
 import java.awt.*;
+import java.io.*;
+import java.nio.charset.*;
 import java.awt.event.*;
 import java.awt.geom.*;
 import java.awt.image.*;
@@ -161,6 +163,24 @@ final class MapView extends JComponent
     static final Color LABEL_BACKGROUND = new Color(16, 16, 20, 225);
     static final Font LABEL_FONT = new Font(Font.SANS_SERIF, Font.BOLD, 12);
     static final Font SMALL_FONT = new Font(Font.SANS_SERIF, Font.PLAIN, 10);
+    static final Color VERSION_TEXT = new Color(255, 255, 255, 140);
+    static final Color NOTICE_TEXT = new Color(200, 200, 200);
+    /** Null when the build left none. */
+    static final String VERSION = version();
+
+    static String version()
+    {
+        try (var in = MapView.class.getResourceAsStream("version.txt"))
+        {
+            String version = in == null ? "" : new String(in.readAllBytes(), StandardCharsets.UTF_8).trim();
+            // Unexpanded ("${version}") when built without the build's own resources step.
+            return version.isEmpty() || version.startsWith("$") ? null : "v" + version;
+        }
+        catch (IOException e)
+        {
+            return null;
+        }
+    }
     static final BasicStroke THIN = new BasicStroke(1f);
     static final BasicStroke ICON_LINE = new BasicStroke(1.8f);
     static final BasicStroke ROUND_LINE = new BasicStroke(2.2f, CAP_ROUND, JOIN_ROUND);
@@ -250,6 +270,8 @@ final class MapView extends JComponent
     /** Kinds whose destination lines are hidden. */
     Set<PoiType> linesOff = EnumSet.noneOf(PoiType.class);
     Consumer<String> linesChoice = value -> { };
+    Runnable checkForMap = () -> { };
+    volatile boolean mapUnavailable;
     Control pressedControl;
     Control hoveredControl;
     Point pressed;
@@ -622,11 +644,17 @@ final class MapView extends JComponent
 
     void setMaps(BaseMaps maps)
     {
+        boolean first = map == null;
         this.maps = maps;
         var current = map == null ? null : maps.byId(map.id);
         map = current != null ? current : maps.surface();
         shownCache.clear();
         labelsOnMapFor = null;
+        if (first && following && player != null)
+        {
+            // Opened before any map was had: placed as opening does.
+            jumpToPlayer();
+        }
         repaint();
     }
 
@@ -1129,6 +1157,7 @@ final class MapView extends JComponent
             g.fillRect(0, 0, getWidth(), getHeight());
             if (map == null)
             {
+                paintNoMap(g);
                 return;
             }
             paintTiles(g);
@@ -1221,7 +1250,7 @@ final class MapView extends JComponent
         if (tiles.version == null)
         {
             String notice = "Loading map…";
-            g.setColor(new Color(200, 200, 200));
+            g.setColor(NOTICE_TEXT);
             g.setFont(LABEL_FONT);
             g.drawString(notice, (getWidth() - g.getFontMetrics().stringWidth(notice)) / 2, getHeight() / 2);
             return;
@@ -2008,6 +2037,7 @@ final class MapView extends JComponent
     void paintControls(Graphics2D g)
     {
         var painted = new ArrayList<Control>();
+        paintVersion(g);
         if (chrome == null)
         {
             backOffset = 0;
@@ -2107,6 +2137,49 @@ final class MapView extends JComponent
         g.fill(triangle(down.shape.getCenterX(), down.shape.getCenterY(), false));
         paintWidgets(g, painted, widgetBottom(getHeight()));
         controls = painted;
+    }
+
+    void setMapUnavailable(boolean unavailable)
+    {
+        mapUnavailable = unavailable;
+        repaint();
+    }
+
+    void paintNoMap(Graphics2D g)
+    {
+        var painted = new ArrayList<Control>();
+        g.setRenderingHint(KEY_ANTIALIASING, VALUE_ANTIALIAS_ON);
+        g.setRenderingHint(KEY_TEXT_ANTIALIASING, VALUE_TEXT_ANTIALIAS_ON);
+        paintVersion(g);
+        if (mapUnavailable)
+        {
+            String notice = "The map could not be loaded";
+            g.setFont(LABEL_FONT);
+            g.setColor(NOTICE_TEXT);
+            int cy = getHeight() / 2;
+            g.drawString(notice, (getWidth() - g.getFontMetrics().stringWidth(notice)) / 2, cy - 14);
+            String check = "Check for a new map";
+            g.setFont(CONTROL_FONT);
+            var metrics = g.getFontMetrics();
+            int width = metrics.stringWidth(check) + 28;
+            text(g, check, control(g, painted, (getWidth() - width) / 2.0, cy, width, () -> {
+                mapUnavailable = false;
+                repaint();
+                checkForMap.run();
+            }, "Ask the map server for its current map"), metrics);
+        }
+        controls = painted;
+    }
+
+    void paintVersion(Graphics2D g)
+    {
+        if (VERSION == null || !config.showVersion())
+        {
+            return;
+        }
+        g.setFont(SMALL_FONT);
+        float x = getWidth() - MARGIN - g.getFontMetrics().stringWidth(VERSION);
+        text.draw(g, VERSION, SMALL_FONT, x, getHeight() - 6, VERSION_TEXT);
     }
 
     /** A short message on the map ("Added to My route"), or null. */

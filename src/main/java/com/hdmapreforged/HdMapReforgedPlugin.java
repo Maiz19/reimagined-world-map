@@ -155,6 +155,9 @@ public class HdMapReforgedPlugin extends Plugin
     final int[] realLevels = new int[Skill.values().length];
     /** Before a map version's files, or the server's versions, are asked for again. */
     static final long RETRY_MS = 60_000;
+    static final long MAX_RETRY_MS = 30 * RETRY_MS;
+    /** Map versions that failed in a row. Data thread. */
+    int failedMaps;
     /** The latest such request waiting, stopped when the plugin stops. */
     volatile Timer retry;
     /** Counts starts and stops, so late callbacks of an earlier run do nothing. */
@@ -220,6 +223,7 @@ public class HdMapReforgedPlugin extends Plugin
         for (MapScreen on : new MapScreen[]{screen, fullScreen})
         {
             on.view.linesChoice = value -> configManager.setConfiguration(GROUP, "linesOff", value);
+            on.view.checkForMap = () -> runData(() -> resolveVersions(true, false));
             on.setNpcPictures(pictures);
         }
 
@@ -694,7 +698,8 @@ public class HdMapReforgedPlugin extends Plugin
     void resolveVersions(boolean now, boolean world)
     {
         KnownVersion known = KnownVersion.read(home.joinSegment(KnownVersion.FILE));
-        if (known != null)
+        // Asked now: the remembered version may be the broken one.
+        if (known != null && !now)
         {
             useVersion(known.version);
         }
@@ -723,6 +728,10 @@ public class HdMapReforgedPlugin extends Plugin
                 {
                     // The first start, and no answer: nothing to show until the server answers.
                     retryLater(started, () -> resolveVersions(false, world));
+                }
+                else if (currentVersion == null)
+                {
+                    screens(s -> s.view.setMapUnavailable(true));
                 }
                 return;
             }
@@ -838,10 +847,22 @@ public class HdMapReforgedPlugin extends Plugin
             if (data == null)
             {
                 log.debug("Map version {} incomplete; showing {}", version, currentVersion);
-                retryLater(started, () -> {
+                if (list != null && regions != null && places != null)
+                {
+                    // Complete but unusable: deleted, or every retry would read the same copy from disk.
+                    serverCache.forget("maps", version);
+                }
+                if (currentVersion == null)
+                {
+                    screens(s -> s.view.setMapUnavailable(true));
+                }
+                // The server is asked, as it may have replaced this version: at once, then 1, 2, 4... minutes apart.
+                long gap = failedMaps == 0 ? 0 : Math.min(MAX_RETRY_MS, RETRY_MS << Math.min(failedMaps - 1, 5));
+                failedMaps++;
+                retryLater(started, gap, () -> {
                     if (version.equals(wantedVersion))
                     {
-                        useVersion(version);
+                        resolveVersions(true, false);
                     }
                 });
                 return;
@@ -866,7 +887,12 @@ public class HdMapReforgedPlugin extends Plugin
     /** Runs {@code task} on the data thread after {@link #RETRY_MS} unless the plugin stopped meanwhile. */
     void retryLater(int started, Runnable task)
     {
-        Timer timer = new Timer((int) RETRY_MS, e -> runData(() -> {
+        retryLater(started, RETRY_MS, task);
+    }
+
+    void retryLater(int started, long delayMs, Runnable task)
+    {
+        Timer timer = new Timer((int) delayMs, e -> runData(() -> {
             if (started == life.get())
             {
                 task.run();
@@ -910,6 +936,8 @@ public class HdMapReforgedPlugin extends Plugin
         tiles.setVersion(version, true);
         int generation = dataGeneration.incrementAndGet();
         currentVersion = version;
+        failedMaps = 0;
+        screens(s -> s.view.setMapUnavailable(false));
         // The places' needs and those of the bundled gates and shortcuts: a quest not watched counts as done.
         var reads = new Unlocks.Watched(Stream.concat(Poi.flatten(data.pois).stream().flatMap(poi -> Stream.concat(
             poi.members().stream().map(member -> member.needs), poi.links().stream().map(link -> link.needs))),
