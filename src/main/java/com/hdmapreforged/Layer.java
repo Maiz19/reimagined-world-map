@@ -4,8 +4,7 @@ import lombok.*;
 
 /** Icon groups, in order of precedence when icons overlap; the Icons panel lists their kinds under their titles. */
 @RequiredArgsConstructor
-enum Layer
-{
+enum Layer {
     DUNGEONS("Dungeons and passages", -0.5),
     TRANSPORTS("Transport", Double.NEGATIVE_INFINITY),
     TELEPORTS("Teleports", -2.5),

@@ -1,5 +1,6 @@
 package com.hdmapreforged;
 
+import static com.hdmapreforged.SearchIndex.*;
 import com.google.gson.*;
 import lombok.*;
 import java.io.*;
@@ -13,8 +14,7 @@ import net.runelite.api.coords.*;
  * in; ours only where the game has none. Our entrances and passages are the planner's only.
  */
 @RequiredArgsConstructor(access = AccessLevel.PACKAGE)
-final class MapData
-{
+final class MapData {
     /**
      * Of places.json. An incompatible change raises it, and a new map version built with the new builder carries it:
      * a published version's files never change, and the plugin refuses another format.
@@ -22,8 +22,7 @@ final class MapData
     static final int FORMAT = 2;
 
     @RequiredArgsConstructor
-    static final class Place
-    {
+    static final class Place {
         final WorldPoint point;
         final String name;
         /**
@@ -34,8 +33,7 @@ final class MapData
     }
 
     /** One of the game's own map icons (drawn by {@link MapIconLayer} from the game's sprites) with what it stands for. */
-    static final class Icon
-    {
+    static final class Icon {
         final WorldPoint location;
         /** Differs from {@link #location} where the map draws a place elsewhere (the Keldagrim tunnel). */
         final WorldPoint drawn;
@@ -53,8 +51,7 @@ final class MapData
         final String toggle;
         final Layer group;
 
-        Icon(WorldPoint location, BaseMap map, Poi poi, boolean own, int element, String kind)
-        {
+        Icon(WorldPoint location, BaseMap map, Poi poi, boolean own, int element, String kind) {
             this.location = location;
             drawn = MapView.shownOn(map, location);
             this.map = map;
@@ -90,17 +87,14 @@ final class MapData
      * Of {@code places} of {@code kind} (null: any), the one nearest {@code point} within {@code radius}, another floor
      * counting {@code floorCost} tiles more (negative: none on another floor); the first of equals.
      */
-    static Place nearest(Collection<Place> places, WorldPoint point, String kind, int radius, int floorCost)
-    {
+    static Place nearest(Collection<Place> places, WorldPoint point, String kind, int radius, int floorCost) {
         Place best = null;
         long bestDistance = radius + 1L;
-        for (Place place : places)
-        {
+        for (Place place : places) {
             int floor = place.point.getPlane() == point.getPlane() ? 0 : floorCost;
             int d = place.point.distanceTo2D(point) + floor;
             // The kind last: comparing words is slower, and only needed for a nearer place.
-            if (floor >= 0 && d < bestDistance && (kind == null || kind.equals(place.kind)))
-            {
+            if (floor >= 0 && d < bestDistance && (kind == null || kind.equals(place.kind))) {
                 best = place;
                 bestDistance = d;
             }
@@ -109,25 +103,62 @@ final class MapData
     }
 
     static final int TOWN_RADIUS = 120;
+    /** In a town this near the town's name is the place's... */
+    static final int IN_TOWN = 50;
+    /** ...unless over this far, with a landmark of its own this near (the Grand Exchange's bank, the Cooks' Guild's). */
+    static final int TOWN_EDGE = 45, OWN_PLACE = 15;
+    /** A guild's grounds are wider: the Warriors' Guild's bank is 22 tiles from its label. */
+    static final int OWN_GUILD = 22;
+    /** Out of town a landmark of the map this near names a place (Castle Wars' bank, not Gu'Tanoth's). */
+    static final int LANDMARK_RADIUS = 40;
+    /** A one-word label this near a town's is a part of it (its market, its park, its palace), not a name to go by. */
+    static final int DISTRICT = 50;
+    /** Out of reach of towns and landmarks, any label this near names a place (Lunar Isle, Mos Le'Harmless). */
+    static final int NEAR_LABEL = 60;
 
     /**
-     * The nearest town. Its own loop, not {@link #nearest}: the search index names thousands of places with it, and a
-     * loop shared with other kinds of lists ran about twice as slow (the JIT no longer inlines the iteration).
+     * The name a place goes by: its town's when in one, unless at a landmark of its own on the town's edge; else the
+     * nearest of a town (counting as half as far) and a landmark of the map's own labels (Castle Wars, the Farming
+     * Guild); else any label near (another floor counting 4 tiles more). A town's parts are no landmarks. Its own loop,
+     * not {@link #nearest}: the search index names thousands of places with it, and a loop shared with other kinds of
+     * lists ran about twice as slow (the JIT no longer inlines the iteration).
      */
-    static String settlement(List<Place> places, WorldPoint at)
-    {
-        String best = null;
-        int bestDistance = TOWN_RADIUS + 1;
-        for (Place place : places)
-        {
+    static String settlement(List<Place> places, WorldPoint at) {
+        var named = named(places, at);
+        return named == null ? null : named.name;
+    }
+
+    /** The label {@link #settlement} names a place by, or null (no town within reach, no label near). */
+    static Place named(List<Place> places, WorldPoint at) {
+        Place town = null, best = null, own = null;
+        int townDistance = TOWN_RADIUS + 1, ownDistance = OWN_GUILD + 1;
+        double bestScore = TOWN_RADIUS / 2.0 + 1;
+        for (Place place : places) {
             int d = place.point.distanceTo2D(at);
-            if (d < bestDistance && "settlement".equals(place.kind))
-            {
-                best = place.name;
-                bestDistance = d;
+            boolean isTown = "settlement".equals(place.kind);
+            if (isTown && d < townDistance) {
+                town = place;
+                townDistance = d;
+            }
+            // A town's part (a one-word label near a town's) is no landmark.
+            if (!isTown && (!"place".equals(place.kind) || d > LANDMARK_RADIUS || place.name.indexOf(' ') < 0
+                && nearest(places, place.point, "settlement", DISTRICT, 0) != null)) {
+                continue;
+            }
+            if (!isTown && d <= (place.name.endsWith(" Guild") ? OWN_GUILD : OWN_PLACE) && d < ownDistance) {
+                own = place;
+                ownDistance = d;
+            }
+            double score = isTown ? d / 2.0 : d;
+            if (score < bestScore) {
+                best = place;
+                bestScore = score;
             }
         }
-        return best;
+        if (townDistance <= IN_TOWN) {
+            return townDistance > TOWN_EDGE && own != null ? own : town;
+        }
+        return best != null ? best : nearest(places, at, null, NEAR_LABEL, 4);
     }
 
     /**
@@ -137,19 +168,14 @@ final class MapData
      *
      * @throws IOException not readable, or not this version's places in this format
      */
-    static MapData read(Gson gson, Reader json, BaseMaps maps, String version) throws IOException
-    {
+    static MapData read(Gson gson, Reader json, BaseMaps maps, String version) throws IOException {
         PlacesFile file;
-        try
-        {
+        try {
             file = gson.fromJson(json, PlacesFile.class);
-        }
-        catch (RuntimeException e)
-        {
+        } catch (RuntimeException e) {
             throw new IOException("Unreadable places of map version " + version, e);
         }
-        if (file == null || file.format != FORMAT || !version.equals(file.version))
-        {
+        if (file == null || file.format != FORMAT || !version.equals(file.version)) {
             throw new IOException("Not the places of map version " + version + " in format " + FORMAT);
         }
         Reading reading = new Reading(maps);
@@ -157,73 +183,60 @@ final class MapData
         var listed = new ArrayList<Poi>();
         var pois = new ArrayList<Poi>();
         Set<Poi> hidden = Collections.newSetFromMap(new IdentityHashMap<>());
-        for (var place : list(file.pois))
-        {
+        for (var place : list(file.pois)) {
             var poi = reading.poi(place, 0);
             listed.add(poi);
-            if (poi != null)
-            {
+            if (poi != null) {
                 pois.add(poi);
-                if (Boolean.TRUE.equals(place.hidden))
-                {
+                if (Boolean.TRUE.equals(place.hidden)) {
                     hidden.add(poi);
                 }
             }
         }
         Map<Integer, String> keys = file.keys == null ? Collections.emptyMap() : file.keys;
         var icons = new ArrayList<Icon>();
-        for (var icon : list(file.icons))
-        {
+        for (var icon : list(file.icons)) {
             var at = point(icon.at);
             var poi = icon.own == null ? reading.poi(icon.poi, 0) : item(listed, icon.own);
-            if (at != null && poi != null)
-            {
+            if (at != null && poi != null) {
                 icons.add(new Icon(at, reading.map(icon.map), poi, icon.own != null, icon.element,
                     keys.get(icon.element)));
             }
         }
         // Labels and kinds as listed too, null where left out: a search hit gives its target's index.
         var listedLabels = new ArrayList<Place>();
-        for (var label : list(file.labels))
-        {
+        for (var label : list(file.labels)) {
             var at = point(label.at);
             listedLabels.add(at == null || label.name == null ? null : new Place(at, label.name, label.kind));
         }
         // The kinds' places as numbered: the places read, each with what it stands for, then the spots.
         var places = new ArrayList<KindIndex.Entry>();
-        for (var poi : reading.numbered)
-        {
+        for (var poi : reading.numbered) {
             places.add(poi == null ? null : new KindIndex.Entry(poi.name, poi.location, poi.note, poi));
         }
-        for (var spot : list(file.spots))
-        {
+        for (var spot : list(file.spots)) {
             var at = point(spot.at);
             places.add(at == null || spot.name == null ? null : new KindIndex.Entry(spot.name, at, spot.detail, null));
         }
         var listedKinds = new ArrayList<KindIndex.Kind>();
-        for (var written : list(file.kinds))
-        {
+        for (var written : list(file.kinds)) {
             var kind = new KindIndex.Kind(written.label, value(PoiType.class, written.type), written.page);
-            for (int i : written.places == null ? new int[0] : written.places)
-            {
+            for (int i : written.places == null ? new int[0] : written.places) {
                 var place = item(places, i);
-                if (place != null)
-                {
+                if (place != null) {
                     kind.entries.add(place);
                 }
             }
             listedKinds.add(written.label == null || kind.entries.isEmpty() ? null : kind);
         }
-        var hits = new ArrayList<SearchIndex.Hit>();
-        for (var hit : list(file.hits))
-        {
-            var type = value(SearchIndex.Type.class, hit.type);
-            Object target = type == null ? null : type == SearchIndex.Type.MAP ? maps.byId(hit.target)
-                : item(type == SearchIndex.Type.PLACE ? listedLabels : type == SearchIndex.Type.KIND
-                || type == SearchIndex.Type.KIND_PLACE ? listedKinds : reading.numbered, hit.target);
-            if (target != null && hit.label != null)
-            {
-                var made = new SearchIndex.Hit(type, hit.label, hit.words == null ? hit.label : hit.words,
+        var hits = new ArrayList<Hit>();
+        for (var hit : list(file.hits)) {
+            var type = value(Type.class, hit.type);
+            Object target = type == null ? null : type == Type.MAP ? maps.byId(hit.target)
+                : item(type == Type.PLACE ? listedLabels : type == Type.KIND
+                || type == Type.KIND_PLACE ? listedKinds : reading.numbered, hit.target);
+            if (target != null && hit.label != null) {
+                var made = new Hit(type, hit.label, hit.words == null ? hit.label : hit.words,
                     hit.place, target, point(hit.at), value(PoiType.class, hit.icon));
                 made.later = hit.later == null ? 0 : hit.later;
                 hits.add(made);
@@ -237,28 +250,23 @@ final class MapData
 
     /** Reading one file: its version's maps, and one Needs for equal requirements (a few hundred in thousands). */
     @RequiredArgsConstructor
-    static final class Reading
-    {
+    static final class Reading {
         final BaseMaps maps;
         final Map<Needs, Needs> needs = new HashMap<>();
         /** Listed places and those nearby, then the game's icons' own, in the file's order: null where left out. */
         final List<Poi> numbered = new ArrayList<>();
 
         /** A map id the list lacks reads as none. */
-        BaseMap map(Integer id)
-        {
+        BaseMap map(Integer id) {
             return id == null ? null : maps.byId(id);
         }
 
         /** Null when malformed. */
-        Needs needs(String[] raw)
-        {
-            if (raw == null)
-            {
+        Needs needs(String[] raw) {
+            if (raw == null) {
                 return Needs.NONE;
             }
-            if (raw.length != 4)
-            {
+            if (raw.length != 4) {
                 return null;
             }
             Needs read = new Needs(text(raw[0]), text(raw[1]), text(raw[2]), text(raw[3]));
@@ -266,8 +274,7 @@ final class MapData
         }
 
         /** {@code depth}: 0 for a listed place (which may stand for places nearby), 1 nearby, 2 a stacked member. */
-        Poi poi(PoiJson place, int depth)
-        {
+        Poi poi(PoiJson place, int depth) {
             var type = place == null ? null : value(PoiType.class, place.type);
             var at = type == null ? null : point(place.at);
             Needs needs = at == null ? null : needs(place.needs);
@@ -275,47 +282,37 @@ final class MapData
             String name = "Camelot Teleport: Bank".equals(place.name) ? "Camelot Teleport: Seers" : place.name;
             var poi = needs == null || name == null ? null : new Poi(type, name, at, map(place.map),
                 place.group, needs, place.wiki, map(place.target), place.note);
-            if (depth < 2)
-            {
+            if (depth < 2) {
                 numbered.add(poi);
             }
             var drawn = poi == null || place.drawn == null ? null : point(place.drawn);
-            if (drawn != null)
-            {
+            if (drawn != null) {
                 poi.drawnAt = drawn;
             }
-            if (poi != null && place.picture != null)
-            {
+            if (poi != null && place.picture != null) {
                 poi.picture = place.picture;
             }
-            if (poi == null)
-            {
+            if (poi == null) {
                 // The places nearby are left out with it, keeping their numbers.
                 numbered.addAll(Collections.nCopies(depth == 0 && place != null ? list(place.nearby).size() : 0, null));
                 return null;
             }
-            for (var link : list(place.links))
-            {
+            for (var link : list(place.links)) {
                 var to = point(link.at);
                 Needs linkNeeds = needs(link.needs);
-                if (to != null && linkNeeds != null && link.name != null)
-                {
+                if (to != null && linkNeeds != null && link.name != null) {
                     poi.links.add(new Poi.Link(link.name, to, map(link.map), linkNeeds));
                 }
             }
-            for (var member : depth < 2 ? list(place.members) : Collections.<PoiJson>emptyList())
-            {
+            for (var member : depth < 2 ? list(place.members) : Collections.<PoiJson>emptyList()) {
                 var read = poi(member, 2);
-                if (read != null)
-                {
+                if (read != null) {
                     poi.members.add(read);
                 }
             }
-            for (var near : depth == 0 ? list(place.nearby) : Collections.<PoiJson>emptyList())
-            {
+            for (var near : depth == 0 ? list(place.nearby) : Collections.<PoiJson>emptyList()) {
                 var read = poi(near, 1);
-                if (read != null)
-                {
+                if (read != null) {
                     poi.nearby.add(read);
                 }
             }
@@ -323,40 +320,31 @@ final class MapData
         }
     }
 
-    static <E extends Enum<E>> E value(Class<E> type, String name)
-    {
-        try
-        {
+    static <E extends Enum<E>> E value(Class<E> type, String name) {
+        try {
             return name == null ? null : Enum.valueOf(type, name);
-        }
-        catch (IllegalArgumentException unknown)
-        {
+        } catch (IllegalArgumentException unknown) {
             return null;
         }
     }
 
-    static <T> T item(List<? extends T> list, int i)
-    {
+    static <T> T item(List<? extends T> list, int i) {
         return i >= 0 && i < list.size() ? list.get(i) : null;
     }
 
-    static <T> List<T> nonNull(List<T> list)
-    {
+    static <T> List<T> nonNull(List<T> list) {
         return list.stream().filter(Objects::nonNull).collect(Collectors.toUnmodifiableList());
     }
 
-    static WorldPoint point(int[] at)
-    {
+    static WorldPoint point(int[] at) {
         return at != null && at.length == 3 ? new WorldPoint(at[0], at[1], at[2]) : null;
     }
 
-    static String text(String raw)
-    {
+    static String text(String raw) {
         return raw == null ? "" : raw;
     }
 
-    static <T> List<T> list(List<T> list)
-    {
+    static <T> List<T> list(List<T> list) {
         return list == null ? Collections.emptyList() : list;
     }
 
@@ -364,8 +352,7 @@ final class MapData
      * A map version's places.json (format 2) as {@link #read} binds it and the builder (test sources) writes it, one
      * class for both. Points are [x, y, plane]; map ids those of the version's maps.json. Absent: null, false or none.
      */
-    static final class PlacesFile
-    {
+    static final class PlacesFile {
         int format;
         String version;
         List<String> credits;
@@ -381,10 +368,8 @@ final class MapData
         List<HitJson> hits;
     }
 
-    static final class PoiJson
-    {
-        String type;
-        String name;
+    static final class PoiJson {
+        String type, name;
         int[] at;
         /** Where the map draws it, when not at {@code at} (an upper floor's teleport drawn on the ground floor). */
         int[] drawn;
@@ -406,16 +391,14 @@ final class MapData
         List<PoiJson> nearby;
     }
 
-    static final class LinkJson
-    {
+    static final class LinkJson {
         String name;
         int[] at;
         Integer map;
         String[] needs;
     }
 
-    static final class IconJson
-    {
+    static final class IconJson {
         int[] at;
         Integer map;
         int element = -1;
@@ -424,26 +407,19 @@ final class MapData
         PoiJson poi;
     }
 
-    static final class LabelJson
-    {
+    static final class LabelJson {
         int[] at;
-        String name;
-        String kind;
+        String name, kind;
     }
 
-    static final class SpotJson
-    {
+    static final class SpotJson {
         int[] at;
-        String name;
-        String detail;
+        String name, detail;
     }
 
     /** Every place of one kind ({@link KindIndex}). */
-    static final class KindJson
-    {
-        String label;
-        String type;
-        String page;
+    static final class KindJson {
+        String label, type, page;
         /**
          * Its places in order, numbered as read: each of {@link PlacesFile#pois} followed by its places nearby, then
          * the places of the icons that are not ours, then the spots.
@@ -452,10 +428,8 @@ final class MapData
     }
 
     /** One of the place search's hits ({@link SearchIndex.Hit}). */
-    static final class HitJson
-    {
-        String type;
-        String label;
+    static final class HitJson {
+        String type, label;
         /** The words it is found by, when not its label's. */
         String words;
         /** The words of where it is, if any. */

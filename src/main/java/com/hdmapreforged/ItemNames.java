@@ -1,6 +1,5 @@
 package com.hdmapreforged;
 
-import com.hdmapreforged.route.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.*;
@@ -15,8 +14,7 @@ import net.runelite.client.util.*;
  * read from Swing.
  */
 @RequiredArgsConstructor
-final class ItemNames implements IntFunction<String>, SearchResults.Prices
-{
+final class ItemNames implements IntFunction<String>, SearchResults.Prices {
     final ClientThread clientThread;
     final ItemManager itemManager;
     final Map<Integer, String> names = new ConcurrentHashMap<>();
@@ -31,46 +29,36 @@ final class ItemNames implements IntFunction<String>, SearchResults.Prices
     /** The pictures of the items shown last, so a list built again never asks the game again. Swing thread. */
     final Map<Integer, AsyncBufferedImage> images = new LruMap<>(16, IMAGES);
 
-    public int price(int id)
-    {
+    public int price(int id) {
         Integer price = prices.get(id);
         return price == null ? -1 : price;
     }
 
     /** Shows the game's picture of an item in {@code label}, once loaded. */
-    void picture(int id, JLabel label)
-    {
+    void picture(int id, JLabel label) {
         images.computeIfAbsent(id, itemManager::getImage).addTo(label);
     }
 
-    public String apply(int id)
-    {
+    public String apply(int id) {
         String name = names.get(id);
         return name != null || !unnamed.containsKey(id) ? name : "Item " + id;
     }
 
     /** Client thread. */
-    String lookUp(int id)
-    {
-        try
-        {
+    String lookUp(int id) {
+        try {
             var item = itemManager.getItemComposition(id);
             String name = item == null ? null : item.getName();
             return name == null || name.isEmpty() || "null".equals(name) ? null : name;
-        }
-        catch (RuntimeException e)
-        {
+        } catch (RuntimeException e) {
             return null;
         }
     }
 
-    boolean wanted(int id, long now)
-    {
-        if (!names.containsKey(id))
-        {
+    boolean wanted(int id, long now) {
+        if (!names.containsKey(id)) {
             Long tried = unnamed.get(id);
-            if (tried == null || now - tried >= RETRY_MS)
-            {
+            if (tried == null || now - tried >= RETRY_MS) {
                 return true;
             }
         }
@@ -80,44 +68,32 @@ final class ItemNames implements IntFunction<String>, SearchResults.Prices
     }
 
     /** Client thread. */
-    int lookUpPrice(int id)
-    {
-        try
-        {
+    int lookUpPrice(int id) {
+        try {
             return (int) Math.min(Integer.MAX_VALUE, Math.max(0, itemManager.getItemPrice(id)));
-        }
-        catch (RuntimeException e)
-        {
+        } catch (RuntimeException e) {
             return 0;
         }
     }
 
-    public void resolve(Collection<Integer> ids, Runnable done)
-    {
+    public void resolve(Collection<Integer> ids, Runnable done) {
         // Previews run without a client.
         long now = System.currentTimeMillis();
-        if (clientThread == null || ids.stream().noneMatch(id -> wanted(id, now)))
-        {
+        if (clientThread == null || ids.stream().noneMatch(id -> wanted(id, now))) {
             return;
         }
         clientThread.invoke(() -> {
             long at = System.currentTimeMillis();
-            for (int id : ids)
-            {
-                if (!wanted(id, at))
-                {
+            for (int id : ids) {
+                if (!wanted(id, at)) {
                     continue;
                 }
-                if (!names.containsKey(id))
-                {
+                if (!names.containsKey(id)) {
                     String name = lookUp(id);
-                    if (name != null)
-                    {
+                    if (name != null) {
                         names.put(id, name);
                         unnamed.remove(id);
-                    }
-                    else
-                    {
+                    } else {
                         unnamed.put(id, at);
                     }
                 }

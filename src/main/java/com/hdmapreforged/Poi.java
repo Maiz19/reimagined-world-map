@@ -6,11 +6,9 @@ import net.runelite.api.coords.*;
 
 /** An icon on the map. */
 @RequiredArgsConstructor
-final class Poi
-{
+final class Poi {
     @RequiredArgsConstructor
-    static final class Link
-    {
+    static final class Link {
         final String label;
         final WorldPoint point;
         /** Null when no map draws it. */
@@ -41,14 +39,12 @@ final class Poi
     int picture;
 
     /** What the Icons panel shows and hides it by: a teleport's group ("Amulet of glory"), else its type's name. */
-    String toggle()
-    {
+    String toggle() {
         return type == PoiType.TELEPORT && group != null ? group : type.displayName;
     }
 
     /** Where the map draws it. */
-    WorldPoint drawn()
-    {
+    WorldPoint drawn() {
         return drawnAt != null ? drawnAt : location;
     }
 
@@ -57,27 +53,22 @@ final class Poi
     /** Other things at the same place this icon stands for. */
     final List<Poi> nearby = new ArrayList<>();
 
-    List<Link> links()
-    {
+    List<Link> links() {
         return Collections.unmodifiableList(links);
     }
 
-    List<Poi> members()
-    {
+    List<Poi> members() {
         return members.isEmpty() ? Collections.singletonList(this) : Collections.unmodifiableList(members);
     }
 
-    List<Poi> nearby()
-    {
+    List<Poi> nearby() {
         return Collections.unmodifiableList(nearby);
     }
 
     /** Icons with the things they stand for. */
-    static List<Poi> flatten(List<Poi> pois)
-    {
+    static List<Poi> flatten(List<Poi> pois) {
         var all = new ArrayList<Poi>(pois.size() + 16);
-        for (var poi : pois)
-        {
+        for (var poi : pois) {
             all.add(poi);
             all.addAll(poi.nearby);
         }
@@ -85,47 +76,37 @@ final class Poi
     }
 
     /** A spot of the game on the water (a Barracuda Trial's start, salvage): sailed to, not walked to its shore. */
-    boolean atSea()
-    {
+    boolean atSea() {
         return type == PoiType.SALVAGE || name.startsWith("Barracuda Trial");
     }
 
-    boolean hasGroup(String group)
-    {
+    boolean hasGroup(String group) {
         return memberOf(group) != null;
     }
 
-    Poi memberOf(String group)
-    {
-        if (group == null)
-        {
+    Poi memberOf(String group) {
+        if (group == null) {
             return null;
         }
-        for (var member : members())
-        {
-            if (group.equals(member.group))
-            {
+        for (var member : members()) {
+            if (group.equals(member.group)) {
                 return member;
             }
         }
-        for (var other : nearby)
-        {
+        for (var other : nearby) {
             var member = other.memberOf(group);
-            if (member != null)
-            {
+            if (member != null) {
                 return member;
             }
         }
         return null;
     }
 
-    boolean isOn(BaseMap view)
-    {
+    boolean isOn(BaseMap view) {
         return view != null && map != null && (view.id == BaseMap.FULL || map == view);
     }
 
-    public String toString()
-    {
+    public String toString() {
         return name;
     }
 }

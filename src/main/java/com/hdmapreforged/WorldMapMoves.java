@@ -1,6 +1,5 @@
 package com.hdmapreforged;
 
-import com.hdmapreforged.route.*;
 import java.util.*;
 import java.util.function.*;
 import java.util.stream.*;
@@ -12,20 +11,10 @@ import net.runelite.api.coords.*;
  * floor 2 as floor 0): turns drawn coordinates into the game's own. Also where it draws the floors above a part
  * flat on the ground floor (Keldagrim's houses). From the map version's {@code world_map_moves.tsv}.
  */
-final class WorldMapMoves
-{
+final class WorldMapMoves {
     @RequiredArgsConstructor
-    static final class Move
-    {
-        final int map;
-        final int x;
-        final int y;
-        final int width;
-        final int height;
-        final int dx;
-        final int dy;
-        final int plane;
-        final int planes;
+    static final class Move {
+        final int map, x, y, width, height, dx, dy, plane, planes;
     }
 
     /**
@@ -42,80 +31,63 @@ final class WorldMapMoves
         .filter(move -> move.dx != 0 || move.dy != 0 || move.plane != 0).collect(Collectors.toList()));
 
     /** The last move that fits: whole map squares are listed before zones, so a zone's (finer) wins, as in the game. */
-    static Move last(Predicate<Move> fits)
-    {
+    static Move last(Predicate<Move> fits) {
         return last(MOVES.get(), fits);
     }
 
-    static Move last(List<Move> moves, Predicate<Move> fits)
-    {
-        for (int i = moves.size() - 1; i >= 0; i--)
-        {
+    static Move last(List<Move> moves, Predicate<Move> fits) {
+        for (int i = moves.size() - 1; i >= 0; i--) {
             Move move = moves.get(i);
-            if (fits.test(move))
-            {
+            if (fits.test(move)) {
                 return move;
             }
         }
         return null;
     }
 
-    static WorldPoint toWorld(int mapId, WorldPoint drawn)
-    {
+    static WorldPoint toWorld(int mapId, WorldPoint drawn) {
         Move found = last(move -> move.map == mapId && inside(move, drawn.getX(), drawn.getY()));
-        if (found == null)
-        {
-            return drawn;
-        }
-        int plane = found.plane + Math.min(drawn.getPlane(), found.planes - 1);
-        return new WorldPoint(drawn.getX() + found.dx, drawn.getY() + found.dy, Math.min(3, plane));
+        return found == null ? drawn : new WorldPoint(drawn.getX() + found.dx, drawn.getY() + found.dy,
+            Math.min(3, found.plane + Math.min(drawn.getPlane(), found.planes - 1)));
     }
 
     /** As the map of everything draws them: a moved part is drawn where its own map draws it. */
-    static WorldPoint fromDrawnAnywhere(WorldPoint drawn)
-    {
+    static WorldPoint fromDrawnAnywhere(WorldPoint drawn) {
         Move found = last(move -> inside(move, drawn.getX(), drawn.getY()));
         return found == null ? drawn : toWorld(found.map, drawn);
     }
 
     /** Whether map {@code mapId} draws a moved part of the game at this spot (the Dagannoth Kings' lair). */
-    static boolean covers(int mapId, int x, int y)
-    {
+    static boolean covers(int mapId, int x, int y) {
         return last(move -> move.map == mapId && inside(move, x, y)) != null;
     }
 
     @RequiredArgsConstructor
-    static final class Drawn
-    {
+    static final class Drawn {
         final int map;
         final WorldPoint point;
     }
 
-    static WorldPoint toDrawn(int mapId, WorldPoint game)
-    {
+    static WorldPoint toDrawn(int mapId, WorldPoint game) {
         Move found = last(move -> move.map == mapId && moves(move, game));
         return found == null ? null : drawnBy(found, game);
     }
 
-    static Drawn drawn(WorldPoint game)
-    {
+    static Drawn drawn(WorldPoint game) {
         Move found = last(move -> moves(move, game));
         return found == null ? null : new Drawn(found.map, drawnBy(found, game));
     }
 
-    static boolean moves(Move move, WorldPoint game)
-    {
+    static boolean moves(Move move, WorldPoint game) {
         int floor = game.getPlane() - move.plane;
         return inside(move, game.getX() - move.dx, game.getY() - move.dy) && floor >= 0 && floor < move.planes;
     }
 
-    static boolean inside(Move move, int x, int y)
-    {
+    static boolean inside(Move move, int x, int y) {
         return x >= move.x && x < move.x + move.width && y >= move.y && y < move.y + move.height;
     }
 
-    static WorldPoint drawnBy(Move move, WorldPoint game)
-    {
+    static WorldPoint drawnBy(Move move, WorldPoint game) {
         return new WorldPoint(game.getX() - move.dx, game.getY() - move.dy, game.getPlane() - move.plane);
     }
 
@@ -124,8 +96,7 @@ final class WorldMapMoves
      * boss rooms' three floors): 1 where only the floor drawn there shows, every other floor there being another place.
      * The map of everything draws each part as the part's own map does: ask with that map's id.
      */
-    static int floorsDrawnFlat(int mapId, int x, int y)
-    {
+    static int floorsDrawnFlat(int mapId, int x, int y) {
         Move found = last(ALL.get(), move -> move.map == mapId && inside(move, x, y));
         return found == null ? 1 : found.planes;
     }

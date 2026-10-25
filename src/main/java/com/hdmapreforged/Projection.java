@@ -3,8 +3,7 @@ package com.hdmapreforged;
 import net.runelite.api.coords.*;
 
 /** Where world points appear in the frame being painted; add 0.5 to a tile for its middle. */
-interface Projection
-{
+interface Projection {
     double screenX(double worldX);
 
     double screenY(double worldY);
@@ -23,8 +22,7 @@ interface Projection
     boolean shows(WorldPoint point);
 
     /** Where a game point is drawn on the map in view (the Kalphite Lair is drawn beside the desert caves). */
-    default WorldPoint shown(WorldPoint point)
-    {
+    default WorldPoint shown(WorldPoint point) {
         return point;
     }
 }

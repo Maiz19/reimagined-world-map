@@ -5,23 +5,17 @@ import net.runelite.client.party.messages.*;
 import net.runelite.client.util.*;
 
 /** Where a party member is. The class name is the message type on the party server; short field names keep it small. */
-public class HdMapPartyLocation extends PartyMemberMessage
-{
-    static final int MAX_COORDINATE = 16383;
-    static final int MAX_NAME = 12;
-    static final int MAX_RAW_NAME = 64;
+public class HdMapPartyLocation extends PartyMemberMessage {
+    static final int MAX_COORDINATE = 16383, MAX_NAME = 12, MAX_RAW_NAME = 64;
 
-    private final int x;
-    private final int y;
-    private final int p;
+    private final int x, y, p;
     /** World, 0 when unknown. */
     private final int w;
     private final String n;
     /** In a house (the point is its portal); else left out, as null. */
     private final Boolean h;
 
-    HdMapPartyLocation(WorldPoint point, int world, String name, boolean house)
-    {
+    HdMapPartyLocation(WorldPoint point, int world, String name, boolean house) {
         h = house ? true : null;
         x = point == null ? -1 : point.getX();
         y = point == null ? -1 : point.getY();
@@ -30,38 +24,31 @@ public class HdMapPartyLocation extends PartyMemberMessage
         n = name;
     }
 
-    static HdMapPartyLocation offline(String name)
-    {
-        return new HdMapPartyLocation(null, 0, name, false);
+    static HdMapPartyLocation offline() {
+        return new HdMapPartyLocation(null, 0, null, false);
     }
 
-    WorldPoint point()
-    {
+    WorldPoint point() {
         return plausible(x, y, p) ? new WorldPoint(x, y, p) : null;
     }
 
-    static boolean plausible(WorldPoint point)
-    {
+    static boolean plausible(WorldPoint point) {
         return point != null && plausible(point.getX(), point.getY(), point.getPlane());
     }
 
-    private static boolean plausible(int x, int y, int plane)
-    {
+    private static boolean plausible(int x, int y, int plane) {
         return x >= 0 && y >= 0 && x <= MAX_COORDINATE && y <= MAX_COORDINATE && plane >= 0 && plane <= 3;
     }
 
-    boolean house()
-    {
+    boolean house() {
         return Boolean.TRUE.equals(h);
     }
 
-    int world()
-    {
+    int world() {
         return w > 0 && w < 1000 ? w : 0;
     }
 
-    String name()
-    {
+    String name() {
         return cleaned(n, false);
     }
 
@@ -70,15 +57,12 @@ public class HdMapPartyLocation extends PartyMemberMessage
      * ever taken as HTML in a Swing label); non-breaking spaces made plain, trimmed. Null if empty, too long raw, or
      * too long after.
      */
-    static String cleaned(String raw, boolean stripBrackets)
-    {
-        if (raw == null || raw.length() > MAX_RAW_NAME)
-        {
+    static String cleaned(String raw, boolean stripBrackets) {
+        if (raw == null || raw.length() > MAX_RAW_NAME) {
             return null;
         }
         String name = Text.removeTags(raw);
-        if (stripBrackets)
-        {
+        if (stripBrackets) {
             name = name.replace('<', ' ');
         }
         name = name.replace('\u00a0', ' ').trim();

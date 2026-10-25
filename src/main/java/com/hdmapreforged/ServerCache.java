@@ -11,13 +11,12 @@ import net.runelite.client.util.*;
 
 /**
  * The map server's files kept on disk once seen, under the plugin's folder: the lists of a data version, and a map
- * version's map list, region table and places, and NPC pictures. A player asks the server for each file once; when
- * another version of a kind comes into use, the old version's folder goes.
+ * version's map list, region table, places and route tables, and NPC pictures. A player asks the server for each file
+ * once; once another version of a kind is in use ({@link #prune}), the old version's folder goes.
  */
 @Slf4j
 @RequiredArgsConstructor
-final class ServerCache
-{
+final class ServerCache {
     static final Pattern NAME = Pattern.compile("[A-Za-z0-9_.-]{1,64}");
     static final Pattern KIND = Pattern.compile("[a-z]{1,16}");
     static final int MAX_BYTES = 16 * 1024 * 1024;
@@ -34,106 +33,73 @@ final class ServerCache
      * (null when there are none) to the consumer it is given; they are kept for next time. Any thread; {@code done}
      * is called once, on any thread, with null when there are no bytes.
      */
-    void bytes(String kind, String version, String name, Consumer<Consumer<byte[]>> fetch, Consumer<byte[]> done)
-    {
+    void bytes(String kind, String version, String name, Consumer<Consumer<byte[]>> fetch, Consumer<byte[]> done) {
         var file = file(kind, version, name);
-        if (file == null || !later(() -> {
+        if (file == null || !TileCache.execute(io, () -> {
             String key = kind + "/" + version + "/" + name;
             var kept = stale.contains(key) ? null : read(file);
-            if (kept != null)
-            {
+            if (kept != null) {
                 done.accept(kept);
-                prune(kind, version);
                 return;
             }
             fetch.accept(bytes -> {
-                if (bytes != null)
-                {
+                if (bytes != null) {
                     // Passed over until the server's copy comes, so a version is never half old copies, half new.
                     stale.remove(key);
-                    later(() -> keep(kind, version, file, bytes));
+                    TileCache.execute(io, () -> keep(file, bytes));
                 }
                 done.accept(bytes);
             });
-        }))
-        {
+        })) {
             fetch.accept(done);
         }
     }
 
-    /**
-     * A version's kept files passed over until the server sends its own, which overwrite them; left on disk while it
-     * does not answer. Any thread.
-     */
-    void refetch(String kind, String version, Collection<String> names)
-    {
-        names.forEach(name -> stale.add(kind + "/" + version + "/" + name));
-    }
-
     /** Null for a name that could leave the folder. */
-    Filepath file(String kind, String version, String name)
-    {
+    Filepath file(String kind, String version, String name) {
         return KIND.matcher(kind).matches() && MapServer.isSafeVersion(version) && NAME.matcher(name).matches()
             ? root.joinSegment(kind).joinSegment(version).joinSegment(name) : null;
     }
 
-    boolean later(Runnable work)
-    {
-        return TileCache.execute(io, work);
-    }
-
     /** IO thread. */
-    static byte[] read(Filepath file)
-    {
-        if (!file.isFile())
-        {
+    static byte[] read(Filepath file) {
+        if (!file.isFile()) {
             return null;
         }
-        try (InputStream in = file.openInputStream())
-        {
+        try (InputStream in = file.openInputStream()) {
             var bytes = in.readNBytes(MAX_BYTES + 1);
             return bytes.length > MAX_BYTES ? null : bytes;
-        }
-        catch (IOException e)
-        {
+        } catch (IOException e) {
             log.debug("Could not read {}", file, e);
             return null;
         }
     }
 
     /** IO thread. */
-    void keep(String kind, String version, Filepath file, byte[] bytes)
-    {
-        prune(kind, version);
-        try
-        {
+    void keep(Filepath file, byte[] bytes) {
+        try {
             TileCache.writeAtomically(file, bytes);
-        }
-        catch (IOException e)
-        {
+        } catch (IOException e) {
             log.debug("Could not keep {}", file, e);
         }
     }
 
-    /** IO thread: once a kind's version changes, the other versions' folders go. */
-    void prune(String kind, String version)
-    {
-        if (version.equals(inUse.put(kind, version)))
-        {
+    /**
+     * {@code version} of {@code kind} is in use (shown, so usable): the other versions' folders go. Not before, or a
+     * broken new version would take the working one's files. Background thread.
+     */
+    void prune(String kind, String version) {
+        if (version.equals(inUse.put(kind, version))) {
             return;
         }
         var folder = root.joinSegment(kind);
-        if (!folder.isDirectory())
-        {
+        if (!folder.isDirectory()) {
             return;
         }
-        try (var others = folder.walk(1))
-        {
+        try (var others = folder.walk(1)) {
             others.filter(other -> !other.equals(folder) && !other.getFileName().equals(version))
                 .forEach(TileCache::deleteTree);
-        }
-        catch (IOException | UncheckedIOException e)
-        {
+        } catch (IOException | UncheckedIOException e) {
             // A folder another prune removed meanwhile: what is left goes next time.
             log.debug("Could not look through {}", folder, e);
         }

@@ -9,11 +9,9 @@ import net.runelite.api.coords.*;
  * map version's places.json lists them (made by the test sources' KindIndexBuilder).
  */
 @RequiredArgsConstructor(access = AccessLevel.PACKAGE)
-final class KindIndex
-{
+final class KindIndex {
     @RequiredArgsConstructor
-    static final class Entry
-    {
+    static final class Entry {
         final String name;
         final WorldPoint point;
         final String detail;
@@ -22,8 +20,7 @@ final class KindIndex
     }
 
     @RequiredArgsConstructor
-    static final class Kind
-    {
+    static final class Kind {
         final String label;
         /** Null for skilling spots. */
         final PoiType type;
@@ -33,8 +30,7 @@ final class KindIndex
 
     final List<Kind> kinds;
 
-    List<Kind> all()
-    {
+    List<Kind> all() {
         return Collections.unmodifiableList(kinds);
     }
 }

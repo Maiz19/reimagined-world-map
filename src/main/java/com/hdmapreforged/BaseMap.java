@@ -7,36 +7,26 @@ import lombok.*;
  * dungeons the game's map lacks, which show the map of everything's tiles ({@code tiles}).
  */
 @RequiredArgsConstructor
-final class BaseMap
-{
-    static final int SURFACE = 0;
-    static final int FULL = -1;
+final class BaseMap {
+    static final int SURFACE = 0, FULL = -1;
 
     final int id;
     final String name;
-    final int minX;
-    final int minY;
-    final int maxX;
-    final int maxY;
-    final int centerX;
-    final int centerY;
+    final int minX, minY, maxX, maxY, centerX, centerY;
     /** The map whose tiles draw this one: itself, or {@link #FULL}. */
     final int tiles;
     /** The map list it is of (set by it): its region table tells on which floor it draws some ground. */
     BaseMaps maps;
 
-    boolean contains(int x, int y)
-    {
+    boolean contains(int x, int y) {
         return x >= minX && x < maxX && y >= minY && y < maxY;
     }
 
-    long area()
-    {
+    long area() {
         return (long) (maxX - minX) * (maxY - minY);
     }
 
-    public String toString()
-    {
+    public String toString() {
         return name;
     }
 }

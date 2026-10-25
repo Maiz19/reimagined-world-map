@@ -5,10 +5,11 @@ import java.awt.image.*;
 import java.util.*;
 import java.util.function.*;
 import javax.swing.*;
+import lombok.*;
 
 /** The map's Icons panel: how icons show, and each kind of icon on or off by itself, under its group. Swing thread. */
-final class IconPanel
-{
+@RequiredArgsConstructor
+final class IconPanel {
     final HdMapReforgedConfig config;
     /** Builds the panel again where it shows. */
     final Runnable changed;
@@ -19,27 +20,17 @@ final class IconPanel
     /** Groups unfolded. */
     final Set<Layer> open = EnumSet.noneOf(Layer.class);
 
-    IconPanel(HdMapReforgedConfig config, Runnable changed)
-    {
-        this.config = config;
-        this.changed = changed;
-    }
-
-    void setData(MapData data)
-    {
+    void setData(MapData data) {
         kinds.clear();
-        for (var poi : Poi.flatten(data.pois))
-        {
-            for (var member : data.hidden.contains(poi) ? Collections.<Poi>emptyList() : poi.members())
-            {
+        for (var poi : Poi.flatten(data.pois)) {
+            for (var member : data.hidden.contains(poi) ? Collections.<Poi>emptyList() : poi.members()) {
                 add(member.type.layer, member.toggle(), () -> {
                     var picture = PoiIcons.picture(member.picture);
                     return picture != null ? picture : PoiIcons.image(member.type, 15);
                 });
             }
         }
-        for (var icon : data.icons)
-        {
+        for (var icon : data.icons) {
             add(icon.group, icon.toggle, () -> {
                 var sprite = GameIconSprites.element(icon.element);
                 return sprite != null ? sprite : PoiIcons.image(icon.poi.type, 15);
@@ -48,25 +39,21 @@ final class IconPanel
         changed.run();
     }
 
-    void add(Layer group, String name, Supplier<BufferedImage> picture)
-    {
+    void add(Layer group, String name, Supplier<BufferedImage> picture) {
         kinds.computeIfAbsent(group, k -> new TreeMap<>(String.CASE_INSENSITIVE_ORDER)).putIfAbsent(name, picture);
     }
 
-    Set<String> off()
-    {
+    Set<String> off() {
         return new TreeSet<>(Arrays.asList(config.iconsOff().split("\n")));
     }
 
-    void save(Set<String> off)
-    {
+    void save(Set<String> off) {
         off.remove("");
         set.accept("iconsOff", String.join("\n", off));
         changed.run();
     }
 
-    JComponent section(int width)
-    {
+    JComponent section(int width) {
         var panel = SearchResults.column();
         panel.add(check("Quest status", "A dot on quest start icons: green finished, yellow started, red not started",
             config.questStatus(), on -> set.accept("questStatus", on)));
@@ -84,22 +71,22 @@ final class IconPanel
         kinds.forEach((group, named) -> {
             boolean unfolded = open.contains(group);
             var fold = SearchResults.link(unfolded ? "▾" : "▸", () -> {
-                if (!open.remove(group))
-                {
+                if (!open.remove(group)) {
                     open.add(group);
                 }
                 changed.run();
             }, 12);
             var all = check(group.title + " (" + named.size() + ")", "Every kind below on or off",
                 named.keySet().stream().noneMatch(off::contains), on -> {
-                    off.removeAll(named.keySet());
-                    if (!on)
-                    {
-                        off.addAll(named.keySet());
+                    // As saved now: the other map's panel may have changed it meanwhile.
+                    var now = off();
+                    now.removeAll(named.keySet());
+                    if (!on) {
+                        now.addAll(named.keySet());
                     }
-                    save(off);
+                    save(now);
                 });
-            all.setFont(all.getFont().deriveFont(Font.BOLD));
+            SearchResults.bold(all);
             SearchResults.add(panel, 6, TourPanel.row(fold, all));
             (unfolded ? named : Map.<String, Supplier<BufferedImage>>of()).forEach((name, picture) -> {
                 var image = picture.get();
@@ -107,20 +94,24 @@ final class IconPanel
                     ? image.getScaledInstance(15, 15, Image.SCALE_SMOOTH) : image));
                 icon.setBorder(BorderFactory.createEmptyBorder(0, 16, 0, 0));
                 panel.add(TourPanel.row(icon, check(name, null, !off.contains(name), on -> {
-                    if (!off.remove(name))
-                    {
-                        off.add(name);
+                    var now = off();
+                    if (on) {
+                        now.remove(name);
+                    } else {
+                        now.add(name);
                     }
-                    save(off);
+                    save(now);
                 })));
             });
         });
         return panel;
     }
 
-    static JCheckBox check(String text, String tip, boolean on, Consumer<Boolean> action)
-    {
-        var box = new JCheckBox(text, on);
+    /** {@code text} may be a kind's name from places.json: never rendered as HTML. */
+    static JCheckBox check(String text, String tip, boolean on, Consumer<Boolean> action) {
+        var box = new JCheckBox((String) null, on);
+        box.putClientProperty("html.disable", Boolean.TRUE);
+        box.setText(text);
         box.setOpaque(false);
         box.setFocusable(false);
         box.setForeground(Floating.LIGHT);

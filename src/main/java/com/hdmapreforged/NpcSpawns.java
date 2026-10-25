@@ -6,13 +6,10 @@ import lombok.*;
 import net.runelite.api.coords.*;
 
 /** Where a monster or NPC is, as places of close spawns, and what it drops ({@link WorldData#spawns}); also a kind's places. */
-final class NpcSpawns
-{
+final class NpcSpawns {
     @RequiredArgsConstructor
-    static final class Group
-    {
-        final String name;
-        final String location;
+    static final class Group {
+        final String name, location;
         final List<WorldPoint> points;
         final String category;
         /** What the list says of it ("7 here", "4 spots"); empty or null for nothing. */
@@ -26,24 +23,20 @@ final class NpcSpawns
         /** A shop's stock of the item searched ({@link WorldData#ENDLESS} for endless); 0 for other places. */
         int stock;
 
-        Group(String name, String location, List<WorldPoint> points)
-        {
+        Group(String name, String location, List<WorldPoint> points) {
             this(name, location, points, null, null, null);
         }
 
-        Group withNote(String note)
-        {
+        Group withNote(String note) {
             return copy(location, note);
         }
 
         /** The same place under a place name ("Waterfall Dungeon"). */
-        Group at(String place)
-        {
+        Group at(String place) {
             return copy(place, note);
         }
 
-        Group copy(String place, String text)
-        {
+        Group copy(String place, String text) {
             Group group = new Group(name, place, points, category, text, color);
             group.poi = poi;
             group.seen = seen;
@@ -52,15 +45,13 @@ final class NpcSpawns
             return group;
         }
 
-        WorldPoint center()
-        {
+        WorldPoint center() {
             return NpcSpawns.center(points);
         }
     }
 
     /** The point nearest the middle of them all, so a mark sits on a real tile; null for none. */
-    static WorldPoint center(List<WorldPoint> points)
-    {
+    static WorldPoint center(List<WorldPoint> points) {
         double x = points.stream().mapToInt(WorldPoint::getX).average().orElse(0);
         double y = points.stream().mapToInt(WorldPoint::getY).average().orElse(0);
         return points.stream().min(Comparator.comparingDouble(p -> (p.getX() - x) * (p.getX() - x)
@@ -76,8 +67,7 @@ final class NpcSpawns
     /** The standard table's drops. */
     final List<WorldData.Drop> drops;
 
-    NpcSpawns(String page, List<Group> groups, int npc, List<WorldData.Table> tables)
-    {
+    NpcSpawns(String page, List<Group> groups, int npc, List<WorldData.Table> tables) {
         this.page = page;
         this.groups = Collections.unmodifiableList(groups);
         this.npc = npc;

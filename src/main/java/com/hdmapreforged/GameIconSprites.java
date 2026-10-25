@@ -8,18 +8,15 @@ import net.runelite.api.worldmap.*;
 import net.runelite.client.util.*;
 
 /** The game's own world map icons, read from the client: drawn as the game's icons, and so our icons look like them. */
-final class GameIconSprites
-{
+final class GameIconSprites {
     static final Map<PoiType, BufferedImage> SPRITES = new ConcurrentHashMap<>();
     static final Map<Integer, BufferedImage> ELEMENT_SPRITES = new ConcurrentHashMap<>();
 
-    static boolean hasElements()
-    {
+    static boolean hasElements() {
         return !ELEMENT_SPRITES.isEmpty();
     }
 
-    static BufferedImage element(int id)
-    {
+    static BufferedImage element(int id) {
         return id < 0 ? null : ELEMENT_SPRITES.get(id);
     }
 
@@ -30,22 +27,17 @@ final class GameIconSprites
      * Client thread only: reads up to {@link #SLICE} of {@code ids}, taking them off it; false until none are left, or
      * while the game has not loaded its data yet.
      */
-    static boolean loadElements(Client client, Collection<Integer> ids)
-    {
+    static boolean loadElements(Client client, Collection<Integer> ids) {
         var left = ids.iterator();
-        for (int n = 0; n < SLICE && left.hasNext(); n++)
-        {
+        for (int n = 0; n < SLICE && left.hasNext(); n++) {
             int id = left.next();
-            if (!ELEMENT_SPRITES.containsKey(id))
-            {
+            if (!ELEMENT_SPRITES.containsKey(id)) {
                 var config = config(client, id);
-                if (config == null && waiting(client))
-                {
+                if (config == null && waiting(client)) {
                     return false;
                 }
                 BufferedImage image = config == null ? null : icon(config);
-                if (image != null)
-                {
+                if (image != null) {
                     ELEMENT_SPRITES.put(id, image);
                 }
             }
@@ -55,26 +47,20 @@ final class GameIconSprites
     }
 
     /** Null for an id the game does not know (or not yet). */
-    static MapElementConfig config(Client client, int id)
-    {
-        try
-        {
+    static MapElementConfig config(Client client, int id) {
+        try {
             return client.getMapElementConfig(id);
-        }
-        catch (RuntimeException e)
-        {
+        } catch (RuntimeException e) {
             return null;
         }
     }
 
     /** Still null once logged in: an id gone after a game update, not worth retrying every tick. */
-    static boolean waiting(Client client)
-    {
+    static boolean waiting(Client client) {
         return client.getGameState() != GameState.LOGGED_IN;
     }
 
-    static BufferedImage icon(MapElementConfig config)
-    {
+    static BufferedImage icon(MapElementConfig config) {
         var pixels = config.getMapIcon(false);
         BufferedImage image = pixels == null ? null : pixels.toBufferedImage();
         return image != null && image.getWidth() > 0 && image.getHeight() > 0 ? image : null;
@@ -84,38 +70,27 @@ final class GameIconSprites
     static final BufferedImage FAIRY_RING = ImageUtil.loadImageResource(GameIconSprites.class, "fairy_ring.png");
 
     /** Null when not loaded yet, or a type we draw ourselves. */
-    static BufferedImage get(PoiType type)
-    {
+    static BufferedImage get(PoiType type) {
         return type == PoiType.FAIRY_RING ? FAIRY_RING : SPRITES.get(type);
     }
 
-    static void clear()
-    {
+    static void clear() {
         SPRITES.clear();
         ELEMENT_SPRITES.clear();
     }
 
     /** Client thread only; false while the game has not loaded its data yet. */
-    static boolean load(Client client)
-    {
-        for (var type : PoiType.values())
-        {
-            if (type.element < 0)
-            {
+    static boolean load(Client client) {
+        for (var type : PoiType.values()) {
+            if (type.element < 0) {
                 continue;
             }
             var config = config(client, type.element);
-            if (config == null)
-            {
-                if (waiting(client))
-                {
-                    return false;
-                }
-                continue;
+            if (config == null && waiting(client)) {
+                return false;
             }
-            BufferedImage image = icon(config);
-            if (image != null)
-            {
+            BufferedImage image = config == null ? null : icon(config);
+            if (image != null) {
                 SPRITES.put(type, image);
             }
         }

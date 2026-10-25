@@ -7,18 +7,14 @@ import java.awt.*;
 import java.awt.geom.*;
 
 /** The local player on the map as a yellow target, or an arrow at the view's edge when out of sight. */
-final class PlayerMarker
-{
-    static final Color YELLOW = new Color(255, 214, 64);
-    static final Color SHADOW = new Color(0, 0, 0, 170);
+final class PlayerMarker {
+    static final Color YELLOW = new Color(255, 214, 64), SHADOW = new Color(0, 0, 0, 170);
     static final Font FONT = new Font(Font.SANS_SERIF, Font.BOLD, 11);
 
     /** {@code otherFloor}: drawn fainter and dashed; {@code home}: in a box saying so, where the house stands. */
-    static void paint(Graphics2D g, TextSprites text, double x, double y, double zoom, boolean otherFloor, boolean home)
-    {
+    static void paint(Graphics2D g, TextSprites text, double x, double y, double zoom, boolean otherFloor, boolean home) {
         double ring = 12 + max(0, min(3, zoom)) * 1.5;
-        if (home)
-        {
+        if (home) {
             box(g, x, y, ring, YELLOW);
             label(g, text, "Home", x, y - ring - 16);
         }
@@ -26,20 +22,16 @@ final class PlayerMarker
         // A glow, so it reads on bright and dark areas alike.
         g.setColor(new Color(255, 214, 64, otherFloor ? 30 : 60));
         g.fill(circle(x, y, ring + 5));
-        for (int pass = 0; pass < 2; pass++)
-        {
+        for (int pass = 0; pass < 2; pass++) {
             g.setColor(pass == 0 ? SHADOW : YELLOW);
             g.setStroke(new BasicStroke(pass == 0 ? 5f : 2.6f, CAP_BUTT, JOIN_ROUND, 10f, dash, 0f));
             g.draw(circle(x, y, ring));
         }
-        double in = ring - 5;
-        double out = ring + 5;
-        for (int pass = 0; pass < 2; pass++)
-        {
+        double in = ring - 5, out = ring + 5;
+        for (int pass = 0; pass < 2; pass++) {
             g.setStroke(new BasicStroke(pass == 0 ? 2.4f : 1.4f, CAP_ROUND, JOIN_ROUND));
             g.setColor(pass == 0 ? SHADOW : YELLOW);
-            for (int i = 0; i < 4; i++)
-            {
+            for (int i = 0; i < 4; i++) {
                 double a = PI / 2 * i;
                 g.draw(new Line2D.Double(x + cos(a) * in, y + sin(a) * in, x + cos(a) * out,
                     y + sin(a) * out));
@@ -54,8 +46,7 @@ final class PlayerMarker
     }
 
     /** The box round a marker in a house, at its portal: room above for its label. */
-    static void box(Graphics2D g, double x, double y, double ring, Color color)
-    {
+    static void box(Graphics2D g, double x, double y, double ring, Color color) {
         var box = new RoundRectangle2D.Double(x - ring - 12, y - ring - 26, ring * 2 + 24, ring * 2 + 44, 10, 10);
         g.setColor(SHADOW);
         g.fill(box);
@@ -65,8 +56,7 @@ final class PlayerMarker
     }
 
     /** Radius {@code r} round {@code (x, y)}; the party's markers and the route's ends draw with it too. */
-    static Ellipse2D circle(double x, double y, double r)
-    {
+    static Ellipse2D circle(double x, double y, double r) {
         return new Ellipse2D.Double(x - r, y - r, r * 2, r * 2);
     }
 
@@ -75,8 +65,7 @@ final class PlayerMarker
      * {@code label} may be null.
      */
     static void pointer(Graphics2D g, TextSprites text, double x, double y, double angle, double scale, Color color,
-        String label)
-    {
+        String label) {
         var arrow = new Path2D.Double();
         arrow.moveTo(12, 0);
         arrow.lineTo(-8, -9);
@@ -95,14 +84,12 @@ final class PlayerMarker
         g.setColor(Color.BLACK);
         g.setStroke(new BasicStroke(1.2f));
         g.draw(shape);
-        if (label != null)
-        {
+        if (label != null) {
             label(g, text, label, x - cos(angle) * 22, y - sin(angle) * 22 + 4);
         }
     }
 
-    static void label(Graphics2D g, TextSprites text, String label, double cx, double top)
-    {
+    static void label(Graphics2D g, TextSprites text, String label, double cx, double top) {
         g.setFont(FONT);
         var metrics = g.getFontMetrics();
         text.draw(g, label, FONT, (float) (cx - metrics.stringWidth(label) / 2.0), (float) (top + metrics.getAscent() / 2.0),

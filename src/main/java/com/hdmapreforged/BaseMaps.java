@@ -2,7 +2,6 @@ package com.hdmapreforged;
 
 import static com.hdmapreforged.BaseMap.*;
 
-import com.hdmapreforged.route.*;
 import com.google.gson.*;
 import java.io.*;
 import java.util.*;
@@ -10,136 +9,99 @@ import java.util.function.*;
 import net.runelite.api.coords.*;
 
 /** A map version's map list (our map server's maps.json); its region table decides where bounds overlap. */
-final class BaseMaps
-{
+final class BaseMaps {
     final List<BaseMap> sorted;
     final Map<Integer, BaseMap> byId = new HashMap<>();
     RegionTable regions = new RegionTable();
     /** The map version they are of; null when not known. */
     String version;
 
-    BaseMaps(List<BaseMap> maps)
-    {
-        var list = new ArrayList<BaseMap>(maps);
+    BaseMaps(List<BaseMap> maps) {
+        var list = new ArrayList<>(maps);
         // Surface first, then the combined map, then alphabetical.
         list.sort(Comparator.comparingInt((BaseMap m) -> m.id == SURFACE ? 0 : m.id == FULL ? 1 : 2)
             .thenComparing(m -> m.name, String.CASE_INSENSITIVE_ORDER));
         sorted = Collections.unmodifiableList(list);
-        for (var map : list)
-        {
+        for (var map : list) {
             byId.put(map.id, map);
             map.maps = this;
         }
     }
 
-    static final int MAX_COORDINATE = 20_000;
-    static final int MAX_NAME = 100;
+    static final int MAX_COORDINATE = 20_000, MAX_NAME = 100;
 
     /** Implausible entries are left out, not the whole list; an unreadable list gives no maps. */
-    static BaseMaps parse(Gson gson, Reader json)
-    {
+    static BaseMaps parse(Gson gson, Reader json) {
         JsonArray array;
-        try
-        {
+        try {
             array = gson.fromJson(json, JsonArray.class);
-        }
-        catch (RuntimeException e)
-        {
+        } catch (RuntimeException e) {
             return new BaseMaps(Collections.emptyList());
         }
         var maps = new ArrayList<BaseMap>();
         var ids = new HashSet<Integer>();
-        for (var element : array == null ? new JsonArray() : array)
-        {
+        for (var element : array == null ? new JsonArray() : array) {
             var map = map(element);
-            if (map != null && ids.add(map.id))
-            {
+            if (map != null && ids.add(map.id)) {
                 maps.add(map);
             }
         }
         return new BaseMaps(maps);
     }
 
-    static BaseMap map(JsonElement element)
-    {
-        try
-        {
+    static BaseMap map(JsonElement element) {
+        try {
             JsonObject o = element.getAsJsonObject();
             var bounds = o.getAsJsonArray("bounds");
             var min = bounds.get(0).getAsJsonArray();
             var max = bounds.get(1).getAsJsonArray();
             var center = o.has("center") ? o.getAsJsonArray("center") : null;
-            int minX = min.get(0).getAsInt();
-            int minY = min.get(1).getAsInt();
-            int maxX = max.get(0).getAsInt();
+            int minX = min.get(0).getAsInt(), minY = min.get(1).getAsInt(), maxX = max.get(0).getAsInt();
             int maxY = max.get(1).getAsInt();
             int id = o.get("mapId").getAsInt();
             String name = o.get("name").getAsString();
             int tiles = o.has("tiles") ? o.get("tiles").getAsInt() : id;
             if (!inWorld(minX) || !inWorld(minY) || !inWorld(maxX) || !inWorld(maxY) || maxX <= minX || maxY <= minY
                 || id < FULL || name.trim().isEmpty() || name.length() > MAX_NAME
-                || tiles != id && tiles != FULL)
-            {
+                || tiles != id && tiles != FULL) {
                 return null;
             }
             int centerX = center != null ? center.get(0).getAsInt() : (minX + maxX) / 2;
             int centerY = center != null ? center.get(1).getAsInt() : (minY + maxY) / 2;
-            if (!inWorld(centerX) || !inWorld(centerY))
-            {
+            if (!inWorld(centerX) || !inWorld(centerY)) {
                 centerX = (minX + maxX) / 2;
                 centerY = (minY + maxY) / 2;
             }
             return new BaseMap(id, name, minX, minY, maxX, maxY, centerX, centerY, tiles);
-        }
-        catch (RuntimeException e)
-        {
+        } catch (RuntimeException e) {
             return null;
         }
     }
 
-    static boolean inWorld(int coordinate)
-    {
+    static boolean inWorld(int coordinate) {
         return coordinate >= 0 && coordinate <= MAX_COORDINATE;
     }
 
-    BaseMap byId(int id)
-    {
+    BaseMap byId(int id) {
         return byId.get(id);
     }
 
-    BaseMap surface()
-    {
+    BaseMap surface() {
         var surface = byId.get(SURFACE);
         return surface != null ? surface : sorted.get(0);
     }
 
     /** One of the maps drawing the point's region (maps may share one), or the map {@link #find} gives. */
-    boolean draws(BaseMap map, int x, int y)
-    {
-        if (map == null || !map.contains(x, y))
-        {
-            return false;
-        }
+    boolean draws(BaseMap map, int x, int y) {
         var owners = drawers(x, y);
-        return owners != null && Arrays.stream(owners).anyMatch(id -> id == map.id) || find(x, y) == map;
+        return map != null && map.contains(x, y)
+            && (owners != null && Arrays.stream(owners).anyMatch(id -> id == map.id) || find(x, y) == map);
     }
 
     /** The owners of the spot's 8×8 zone where known, else the region's owners; null when not known. */
-    int[] drawers(int x, int y)
-    {
+    int[] drawers(int x, int y) {
         var zone = regions.zoneOwners(x, y);
         return zone != null ? zone : regions.owners(RegionTable.regionId(x, y));
-    }
-
-    /**
-     * The map that draws the ground of a game point's floor where the zone's own map does not draw it on that floor (the
-     * region table's floor lines), or null.
-     */
-    BaseMap floorMap(WorldPoint game)
-    {
-        var found = regions.floorOverride(game.getX(), game.getY(), game.getPlane());
-        var map = found == null ? null : byId(found[0]);
-        return map != null && (map.id == FULL || map.contains(game.getX(), game.getY())) ? map : null;
     }
 
     /**
@@ -147,8 +109,7 @@ final class BaseMaps
      * Brimhaven Dungeon's raised paths, walked on floor 2, drawn on floor 1), or -1. Any map drawn with the same tiles
      * draws it there.
      */
-    int drawnFloor(BaseMap on, WorldPoint game)
-    {
+    int drawnFloor(BaseMap on, WorldPoint game) {
         var found = on == null ? null : regions.floorOverride(game.getX(), game.getY(), game.getPlane());
         var map = found == null ? null : byId(found[0]);
         return map != null && map.tiles == on.tiles ? found[1] : -1;
@@ -158,19 +119,14 @@ final class BaseMaps
      * The game's floor a spot of a map's drawn floor stands for: {@code game} (where the map's moves put it), unless that
      * is no ground ({@code ground}) and a floor the region table draws on {@code drawnFloor} there is: then that floor.
      */
-    WorldPoint gameFloor(BaseMap on, WorldPoint game, int drawnFloor, Predicate<WorldPoint> ground)
-    {
-        if (on == null || ground == null || ground.test(game))
-        {
+    WorldPoint gameFloor(BaseMap on, WorldPoint game, int drawnFloor, Predicate<WorldPoint> ground) {
+        if (on == null || ground == null || ground.test(game)) {
             return game;
         }
-        for (int d = 1; d < 4; d++)
-        {
-            for (int floor : new int[]{game.getPlane() - d, game.getPlane() + d})
-            {
+        for (int d = 1; d < 4; d++) {
+            for (int floor : new int[]{game.getPlane() - d, game.getPlane() + d}) {
                 var other = floor < 0 || floor > 3 ? null : new WorldPoint(game.getX(), game.getY(), floor);
-                if (other != null && drawnFloor(on, other) == drawnFloor && ground.test(other))
-                {
+                if (other != null && drawnFloor(on, other) == drawnFloor && ground.test(other)) {
                     return other;
                 }
             }
@@ -179,36 +135,32 @@ final class BaseMaps
     }
 
     /** The map drawing a game point elsewhere when one does (the Kalphite Lair), else {@link #find(int, int)}. */
-    BaseMap find(WorldPoint game)
-    {
-        if (HousePlan.contains(game.getX(), game.getY()))
-        {
+    BaseMap find(WorldPoint game) {
+        int x = game.getX(), y = game.getY();
+        if (HousePlan.contains(x, y)) {
             // One's house is drawn at the surface map's edge.
             return byId(SURFACE);
         }
-        var floor = floorMap(game);
-        if (floor != null)
-        {
+        // The map that draws the ground of the point's floor where the zone's own map does not draw it on that floor (the
+        // region table's floor lines).
+        var line = regions.floorOverride(x, y, game.getPlane());
+        var floor = line == null ? null : byId(line[0]);
+        if (floor != null && (floor.id == FULL || floor.contains(x, y))) {
             return floor;
         }
         var drawn = WorldMapMoves.drawn(game);
         var moved = drawn == null ? null : byId(drawn.map);
         // Some moves put a place outside the bounds of the map they name.
-        if (moved != null && moved.contains(drawn.point.getX(), drawn.point.getY()))
-        {
+        if (moved != null && moved.contains(drawn.point.getX(), drawn.point.getY())) {
             return moved;
         }
-        var found = find(game.getX(), game.getY());
-        if (found != null && WorldMapMoves.covers(found.id, game.getX(), game.getY()))
-        {
+        var found = find(x, y);
+        if (found != null && WorldMapMoves.covers(found.id, x, y)) {
             // That map shows a moved place here: the smallest other map that draws the spot.
             BaseMap other = null;
-            for (var map : sorted)
-            {
-                if (map != found && map.id != FULL && map.contains(game.getX(), game.getY())
-                    && !WorldMapMoves.covers(map.id, game.getX(), game.getY())
-                    && (other == null || map.area() < other.area()))
-                {
+            for (var map : sorted) {
+                if (map != found && map.id != FULL && map.contains(x, y) && !WorldMapMoves.covers(map.id, x, y)
+                    && (other == null || map.area() < other.area())) {
                     other = map;
                 }
             }
@@ -218,10 +170,8 @@ final class BaseMaps
     }
 
     /** Whether a map shows this game point where it is, not a moved place instead. */
-    boolean drawsGame(BaseMap map, WorldPoint game)
-    {
-        if (map != null && regions.floorOverride(game.getX(), game.getY(), game.getPlane()) != null)
-        {
+    boolean drawsGame(BaseMap map, WorldPoint game) {
+        if (map != null && regions.floorOverride(game.getX(), game.getY(), game.getPlane()) != null) {
             // Its floor's ground is drawn by the map the table names (and every map with the same tiles).
             return map.contains(game.getX(), game.getY()) && drawnFloor(map, game) >= 0;
         }
@@ -233,31 +183,24 @@ final class BaseMaps
      * The smallest map drawing the point's region; the map of everything where the region has none; else the smallest
      * map containing the point, and the map of everything last. Null when no map holds it.
      */
-    BaseMap find(int x, int y)
-    {
+    BaseMap find(int x, int y) {
         var full = byId.get(FULL);
         boolean fullDraws = full != null && full.contains(x, y);
         var owners = drawers(x, y);
         BaseMap best = null;
-        if (owners != null)
-        {
-            for (int id : owners)
-            {
+        if (owners != null) {
+            for (int id : owners) {
                 var map = byId.get(id);
-                if (map != null && map.contains(x, y) && (best == null || map.area() < best.area()))
-                {
+                if (map != null && map.contains(x, y) && (best == null || map.area() < best.area())) {
                     best = map;
                 }
             }
-            if (best != null || owners.length == 0 && fullDraws)
-            {
+            if (best != null || owners.length == 0 && fullDraws) {
                 return best != null ? best : full;
             }
         }
-        for (var map : sorted)
-        {
-            if (map.id != FULL && map.contains(x, y) && (best == null || map.area() < best.area()))
-            {
+        for (var map : sorted) {
+            if (map.id != FULL && map.contains(x, y) && (best == null || map.area() < best.area())) {
                 best = map;
             }
         }

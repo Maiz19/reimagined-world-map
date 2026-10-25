@@ -1,15 +1,13 @@
 package com.hdmapreforged;
 
-import com.hdmapreforged.route.*;
 import java.awt.*;
 import java.io.*;
 import java.nio.charset.*;
 import java.util.*;
 
-enum PoiType
-{
+enum PoiType {
     TELEPORT, FAIRY_RING, SPIRIT_TREE, GNOME_GLIDER, BALLOON, QUETZAL, MUSHTREE, OBELISK, BOAT, CHARTER, CANOE, CARPET,
-    MINECART, PORTAL, LEVER, TRANSPORT, DUNGEON_ENTRANCE, MAP_EXIT, MOORING, SALVAGE, RUNECRAFT_ALTAR, AGILITY_COURSE,
+    MINECART, PORTAL, LEVER, GUIDE, TRANSPORT, DUNGEON_ENTRANCE, MAP_EXIT, MOORING, SALVAGE, RUNECRAFT_ALTAR, AGILITY_COURSE,
     AGILITY_SHORTCUT, FARMING_PATCH, MINIGAME, BANK, ALTAR, ANVIL,
     // The game's own icons: drawn by MapIconLayer from the game's sprites, not as our badges.
     SHOP, QUEST_START, MAP_LINK, GAME_ICON,
@@ -28,8 +26,7 @@ enum PoiType
     final Edge.Kind kind;
     final int saving;
 
-    PoiType()
-    {
+    PoiType() {
         String[] cells = Rows.BY_TYPE.get(name());
         displayName = cells[1];
         layer = Layer.valueOf(cells[2]);
@@ -41,34 +38,27 @@ enum PoiType
     }
 
     /** A game map icon's key with no type: the name the Icons panel shows it by (empty: its own) and its group; or null. */
-    static String[] key(String name)
-    {
+    static String[] key(String name) {
         return Rows.BY_TYPE.get(name);
     }
 
     /** The types' names, layers, colours and game icons, bundled (data/poi_types.tsv), then the keys'. */
-    private static final class Rows
-    {
+    private static final class Rows {
         static final Map<String, String[]> BY_TYPE = new HashMap<>();
 
-        static
-        {
+        static {
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-                PoiType.class.getResourceAsStream("data/poi_types.tsv"), StandardCharsets.UTF_8)))
-            {
+                PoiType.class.getResourceAsStream("data/poi_types.tsv"), StandardCharsets.UTF_8))) {
                 reader.lines().filter(line -> !line.startsWith("#")).map(line -> line.split("\t"))
                     .forEach(cells -> BY_TYPE.put(cells[0], cells));
-            }
-            catch (IOException e)
-            {
+            } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
         }
     }
 
     /** Obelisks send you to a random other obelisk unless you can choose. */
-    boolean isRandomDestination()
-    {
+    boolean isRandomDestination() {
         return this == OBELISK;
     }
 

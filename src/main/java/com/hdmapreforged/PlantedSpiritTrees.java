@@ -2,7 +2,6 @@ package com.hdmapreforged;
 
 import java.util.*;
 import java.util.function.*;
-import com.hdmapreforged.route.*;
 
 /**
  * The spirit trees one plants (Port Sarim, Etceteria, Brimhaven, Hosidius, the Farming Guild) that stand grown for this
@@ -11,8 +10,7 @@ import com.hdmapreforged.route.*;
  * PatchImplementation.SPIRIT_TREE); any other value (growing, diseased, dead, to check, weeds) is none. Kept per account
  * (RS profile key {@link #KEY}); a patch not visited since is not known, so not used.
  */
-final class PlantedSpiritTrees
-{
+final class PlantedSpiritTrees {
     static final String KEY = "plantedSpiritTrees";
     /** The patch state of a grown spirit tree one can travel by. */
     static final int GROWN = 20;
@@ -23,50 +21,38 @@ final class PlantedSpiritTrees
     volatile Set<String> grown = Collections.emptySet();
 
     /** A stop of the travel table that needs a tree planted ("Only after planting a spirit tree here"). */
-    static boolean planted(Poi stop)
-    {
+    static boolean planted(Poi stop) {
         return stop.type == PoiType.SPIRIT_TREE && stop.note != null && stop.note.startsWith("Only after planting");
     }
 
-    Set<String> grown()
-    {
+    Set<String> grown() {
         return grown;
     }
 
-    void load(String saved)
-    {
+    void load(String saved) {
         grown = saved == null || saved.isBlank() ? Collections.emptySet()
             : Collections.unmodifiableSet(new TreeSet<>(Arrays.asList(saved.split(","))));
     }
 
-    String text()
-    {
+    String text() {
         return String.join(",", grown);
     }
 
     /** In {@code region}: reads its patch, if it has one. Whether what is known changed. Client thread. */
-    boolean update(int region, IntUnaryOperator varbit)
-    {
-        for (var patch : PATCHES.get().entrySet())
-        {
+    boolean update(int region, IntUnaryOperator varbit) {
+        for (var patch : PATCHES.get().entrySet()) {
             int[] read = patch.getValue();
-            for (int i = 1; i < read.length; i++)
-            {
-                if (read[i] == region)
-                {
+            for (int i = 1; i < read.length; i++) {
+                if (read[i] == region) {
                     String name = patch.getKey();
                     boolean stands = varbit.applyAsInt(read[0]) == GROWN;
-                    if (stands == grown.contains(name))
-                    {
+                    if (stands == grown.contains(name)) {
                         return false;
                     }
-                    var next = new TreeSet<String>(grown);
-                    if (stands)
-                    {
+                    var next = new TreeSet<>(grown);
+                    if (stands) {
                         next.add(name);
-                    }
-                    else
-                    {
+                    } else {
                         next.remove(name);
                     }
                     grown = Collections.unmodifiableSet(next);

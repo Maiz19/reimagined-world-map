@@ -1,6 +1,5 @@
 package com.hdmapreforged;
 
-import com.hdmapreforged.route.*;
 import java.awt.*;
 import java.awt.image.*;
 import java.util.*;
@@ -16,11 +15,9 @@ import lombok.*;
  * a row scrolled past before its turn waits until it is painted again. Swing thread.
  */
 @RequiredArgsConstructor
-final class NpcPictures
-{
+final class NpcPictures {
     /** A row's picture; headers and shopkeepers show {@link #LARGE}. */
-    static final int SMALL = SearchResults.PICTURE;
-    static final int LARGE = 2 * SMALL;
+    static final int SMALL = SearchResults.PICTURE, LARGE = 2 * SMALL;
     /** The rows of a few screens of both maps' lists, so a list built again has those in view at once. */
     static final int KEPT = 160;
     /** Asked for at once at most: scrolling through hundreds of rows never sends hundreds of requests. */
@@ -46,11 +43,9 @@ final class NpcPictures
      * The NPC's picture in {@code label}, at the label's preferred width: now when kept, else an empty square that asks
      * for it once painted.
      */
-    void show(int npc, JLabel label)
-    {
+    void show(int npc, JLabel label) {
         var known = icons.get(npc);
-        if (known != null)
-        {
+        if (known != null) {
             put(known, label);
             return;
         }
@@ -58,67 +53,54 @@ final class NpcPictures
     }
 
     /** A label painted: its picture waits its turn; not when the server had none just now. */
-    void want(int npc, JLabel label)
-    {
+    void want(int npc, JLabel label) {
         var known = icons.get(npc);
-        if (known != null)
-        {
+        if (known != null) {
             put(known, label);
             return;
         }
         Long failed = missing.get(npc);
-        if (failed != null && System.currentTimeMillis() - failed < RETRY_MS)
-        {
+        if (failed != null && System.currentTimeMillis() - failed < RETRY_MS) {
             return;
         }
         var labels = waiting.get(npc);
-        if (labels == null)
-        {
+        if (labels == null) {
             waiting.put(npc, labels = new ArrayList<>());
             queued.push(npc);
         }
         labels.add(label);
-        if (!nextLater)
-        {
+        if (!nextLater) {
             nextLater = true;
             SwingUtilities.invokeLater(this::next);
         }
     }
 
     /** Asks for the next while fewer than {@link #AT_ONCE} are; those out of view now ask again once painted again. */
-    void next()
-    {
+    void next() {
         nextLater = false;
-        while (asking < AT_ONCE && !queued.isEmpty())
-        {
+        while (asking < AT_ONCE && !queued.isEmpty()) {
             int npc = queued.pop();
             var labels = waiting.get(npc);
-            if (labels.stream().anyMatch(label -> label.isShowing() && !label.getVisibleRect().isEmpty()))
-            {
+            if (labels.stream().anyMatch(label -> label.isShowing() && !label.getVisibleRect().isEmpty())) {
                 asking++;
                 source.accept(npc, image -> SwingUtilities.invokeLater(() -> arrived(npc, image)));
                 continue;
             }
             waiting.remove(npc);
             labels.forEach(label -> {
-                if (label.getIcon() instanceof Pending)
-                {
+                if (label.getIcon() instanceof Pending) {
                     ((Pending) label.getIcon()).asked = false;
                 }
             });
         }
     }
 
-    void arrived(int npc, BufferedImage image)
-    {
+    void arrived(int npc, BufferedImage image) {
         asking--;
         var labels = waiting.remove(npc);
-        if (image == null)
-        {
+        if (image == null) {
             missing.put(npc, System.currentTimeMillis());
-        }
-        else
-        {
+        } else {
             missing.remove(npc);
             // Drawn smoothly: far quicker than Image.SCALE_SMOOTH, and halving is exact.
             BufferedImage large = ScaledTiles.scale(image, LARGE, LARGE);
@@ -129,36 +111,29 @@ final class NpcPictures
         next();
     }
 
-    static void put(Icon[] both, JLabel label)
-    {
+    static void put(Icon[] both, JLabel label) {
         label.setIcon(both[label.getPreferredSize().width == LARGE ? 1 : 0]);
     }
 
     /** An empty square of the picture's size, so the picture comes without a new layout; asks for it once painted. */
     @RequiredArgsConstructor
-    final class Pending implements Icon
-    {
-        final int npc;
-        final int size;
+    final class Pending implements Icon {
+        final int npc, size;
         boolean asked;
 
-        public void paintIcon(Component c, Graphics g, int x, int y)
-        {
-            if (!asked && c instanceof JLabel)
-            {
+        public void paintIcon(Component c, Graphics g, int x, int y) {
+            if (!asked && c instanceof JLabel) {
                 asked = true;
                 // Not while painting: the picture may be put on the label at once.
                 SwingUtilities.invokeLater(() -> want(npc, (JLabel) c));
             }
         }
 
-        public int getIconWidth()
-        {
+        public int getIconWidth() {
             return size;
         }
 
-        public int getIconHeight()
-        {
+        public int getIconHeight() {
             return size;
         }
     }
