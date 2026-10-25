@@ -44,17 +44,20 @@ enum PoiType {
 
     /** The types' names, layers, colours and game icons, bundled (data/poi_types.tsv), then the keys'. */
     private static final class Rows {
-        static final Map<String, String[]> BY_TYPE = new HashMap<>();
+        static final Map<String, String[]> BY_TYPE = rows("data/poi_types.tsv");
+    }
 
-        static {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-                PoiType.class.getResourceAsStream("data/poi_types.tsv"), StandardCharsets.UTF_8))) {
-                reader.lines().filter(line -> !line.startsWith("#")).map(line -> line.split("\t"))
-                    .forEach(cells -> BY_TYPE.put(cells[0], cells));
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
-            }
+    /** A bundled table's rows by their first cell. */
+    static Map<String, String[]> rows(String file) {
+        var rows = new HashMap<String, String[]>();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+            PoiType.class.getResourceAsStream(file), StandardCharsets.UTF_8))) {
+            reader.lines().filter(line -> !line.startsWith("#")).map(line -> line.split("\t"))
+                .forEach(cells -> rows.put(cells[0], cells));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
+        return rows;
     }
 
     /** Obelisks send you to a random other obelisk unless you can choose. */

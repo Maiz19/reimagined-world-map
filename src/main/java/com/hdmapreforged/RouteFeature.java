@@ -43,6 +43,8 @@ import net.runelite.api.coords.*;
 import net.runelite.api.events.*;
 import net.runelite.api.gameval.*;
 import net.runelite.api.gameval.InventoryID;
+import net.runelite.api.widgets.WidgetItem;
+import net.runelite.api.widgets.WidgetUtil;
 import net.runelite.client.callback.*;
 import net.runelite.client.chat.*;
 import net.runelite.client.config.*;
@@ -149,6 +151,7 @@ public final class RouteFeature implements TourPanel.Actions {
     /** The planted spirit trees grown for this account; read near their patches. */
     final PlantedSpiritTrees planted = new PlantedSpiritTrees();
     final OverlayManager overlayManager;
+    final net.runelite.client.game.ItemManager itemManager;
     final EventBus eventBus;
     final ChatMessageManager chatMessageManager;
     final HouseTracker house = new HouseTracker();
@@ -157,7 +160,7 @@ public final class RouteFeature implements TourPanel.Actions {
     final RouteHouse yourHouse = new RouteHouse(this, house);
     final FairyRingLog fairyRingLog = new FairyRingLog(this);
     // Nothing on the game's own world map: projecting a long route there every frame is too heavy.
-    final List<Overlay> overlays = List.of(new GameOverlay(), new MinimapOverlay());
+    final List<Overlay> overlays = List.of(new GameOverlay(), new MinimapOverlay(), new ItemsOverlay());
     final MapView.Overlay mapOverlay = this::paintMap;
     /** Each map's destination arrow. */
     final Map<MapView, MapView.Widget> destinations = new ConcurrentHashMap<>();
@@ -1642,6 +1645,8 @@ public final class RouteFeature implements TourPanel.Actions {
     volatile Map<String, Long> pouchNamed = Map.of();
     /** The item ids any teleport, transport, gate or own way needs; null before the places are known. */
     volatile Set<Integer> routeItemIds;
+    /** The items a teleport or transport step needs, by the step's name (its plain name: without the bank). */
+    volatile Map<String, Set<Integer>> stepItems = Map.of();
     /** The same with the most of each any of them asks for. */
     volatile Map<Integer, Long> routeItemAmounts;
 
@@ -1690,15 +1695,49 @@ public final class RouteFeature implements TourPanel.Actions {
         }
         named = pois;
         var most = new HashMap<Integer, Long>();
+        var byStep = new HashMap<String, Set<Integer>>();
         for (var poi : Poi.flatten(pois)) {
-            poi.members().forEach(member -> Requirements.itemAmounts(member.needs.items, most));
-            poi.links().forEach(link -> Requirements.itemAmounts(link.needs.items, most));
+            poi.members().forEach(member -> {
+                Requirements.itemAmounts(member.needs.items, most);
+                // A spell's runes are no item to use: outlined in the bank only.
+                byStep.computeIfAbsent((member.group != null && member.group.endsWith("Spellbook") ? SPELL : "")
+                    + member.name, k -> new HashSet<>()).addAll(Requirements.itemIds(member.needs.items));
+            });
+            poi.links().forEach(link -> {
+                Requirements.itemAmounts(link.needs.items, most);
+                byStep.computeIfAbsent(describe(poi, link), k -> new HashSet<>())
+                    .addAll(Requirements.itemIds(link.needs.items + "&&" + poi.needs.items));
+            });
         }
+        ownItems(byStep);
+        byStep.values().removeIf(Set::isEmpty);
+        stepItems = byStep;
         fixedNeeds().forEach(needs -> Requirements.itemAmounts(needs.items, most));
         var ids = new HashSet<>(most.keySet());
         routeItemAmounts = unmodifiableMap(most);
         routeItemIds = unmodifiableSet(ids);
         names.resolve(ids, () -> { });
+    }
+
+    /**
+     * The planner's own ways: into the house (the spell chosen or not, its tablet and the capes are what to use) and
+     * to the boat (the Sailing cape, the tablet), into {@code byStep}.
+     */
+    static void ownItems(Map<String, Set<Integer>> byStep) {
+        var house = new HashSet<Integer>();
+        var boat = new HashSet<Integer>();
+        for (var way : OWN.get()) {
+            if (way[0].equals("house") && way[2].isEmpty() || way[0].equals("sailing cape")) {
+                (way[0].equals("house") ? house : boat).addAll(Requirements.itemIds(way[3]));
+            } else if (way[0].equals("boat teleport")) {
+                boat.addAll(Requirements.itemIds(way[7]));
+            }
+        }
+        own("house").forEach(way -> {
+            byStep.put(way[1], house);
+            byStep.put(way[1] + " (Inside)", house);
+        });
+        byStep.put("Teleport to Boat", boat);
     }
 
     /** On the first map right-click: Shortest Path becomes the planner if it is on and nothing was chosen. */
@@ -3106,6 +3145,84 @@ public final class RouteFeature implements TourPanel.Actions {
                 }
             });
             return null;
+        }
+    }
+
+    /**
+     * Of {@code route}'s steps, the items the first one needing any needs into {@code next}, and after a bank step what
+     * the steps after it need into {@code bank}. A house step goes by its teleport ("… → Fairy ring").
+     */
+    static Step routeItems(Route route, Map<String, Set<Integer>> byStep, Set<Integer> next, Set<Integer> bank) {
+        boolean banked = false;
+        Step found = null;
+        for (var step : route == null ? List.<Step>of() : route.steps) {
+            banked |= step.kind == BANK;
+            String name = plain(step.name), first = name == null ? null : name.split(" → ")[0];
+            var spell = name == null ? null : byStep.getOrDefault(SPELL + name, byStep.get(SPELL + first));
+            var items = name == null ? null : byStep.getOrDefault(name, byStep.get(first));
+            if (banked) {
+                bank.addAll(items != null ? items : spell != null ? spell : Set.of());
+            } else if (found == null && (items != null || spell != null || SPELLS.containsKey(first))) {
+                found = step;
+                next.addAll(items != null ? items : Set.of());
+            }
+        }
+        return found;
+    }
+
+    /**
+     * Outlines in the teleport colour what the route needs: in the inventory and worn, the item of its next teleport or
+     * transport; in the bank, what its bank step takes. Client thread.
+     */
+    static final String SPELL = "spell:";
+    /** The spellbook's button of each teleport spell (data/spells.tsv). */
+    static final Map<String, String[]> SPELLS = PoiType.rows("data/spells.tsv");
+
+    final class ItemsOverlay extends WidgetItemOverlay {
+        Route itemsOf;
+        boolean worn;
+        int spell;
+        Set<Integer> next = Set.of(), bank = Set.of();
+        final Map<Integer, Image> outlines = new HashMap<>();
+
+        ItemsOverlay() {
+            showOnInventory();
+            showOnEquipment();
+            showOnBank();
+            drawAfterInterface(InterfaceID.MAGIC_SPELLBOOK);
+        }
+
+        // Here, not per item: with the spellbook open no item is drawn.
+        public Dimension render(Graphics2D g) {
+            Route route = ahead;
+            if (route != itemsOf) {
+                itemsOf = route;
+                next = new HashSet<>();
+                bank = new HashSet<>();
+                var step = routeItems(route, stepItems, next, bank);
+                // A fairy ring's staff: worn is enough.
+                worn = step != null && step.kind != TRANSPORT;
+                var row = step == null ? null : SPELLS.get(plain(step.name).split(" → ")[0]);
+                spell = row == null ? -1 : Integer.parseInt(row[1]);
+                outlines.clear();
+            }
+            var button = config.routeItems() && spell > 0 ? client.getWidget(spell) : null;
+            if (button != null && !button.isHidden()) {
+                g.setColor(config.routeJumpColor());
+                g.draw(button.getBounds());
+            }
+            return super.render(g);
+        }
+
+        public void renderItemOverlay(Graphics2D g, int itemId, WidgetItem item) {
+            int group = WidgetUtil.componentToInterface(item.getWidget().getId());
+            // The Lumbridge Elite Diary opens fairy rings without a staff.
+            if (config.routeItems() && (bank(group) ? bank.contains(itemId) : next.contains(itemId) && (worn
+                || group != InterfaceID.WORNITEMS && client.getVarbitValue(LUMBRIDGE_DIARY_ELITE_COMPLETE) != 1))) {
+                var at = item.getCanvasBounds();
+                g.drawImage(outlines.computeIfAbsent(itemId,
+                    id -> itemManager.getItemOutline(id, 1, config.routeJumpColor())), at.x, at.y, null);
+            }
         }
     }
 

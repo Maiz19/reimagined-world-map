@@ -269,6 +269,12 @@ public interface HdMapReforgedConfig extends Config {
         return true;
     }
 
+    @ConfigItem(keyName = "routeItems", name = "Highlight route items", position = 9, section = route,
+        description = "Outline the item for the route's next teleport in your inventory, and what to take in the bank")
+    default boolean routeItems() {
+        return true;
+    }
+
     @ConfigItem(keyName = "routeTeleports", name = "Use teleports", position = 0, section = planner,
         description = "Teleports whose runes or item you carry")
     default boolean routeTeleports() {
