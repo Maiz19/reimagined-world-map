@@ -74,6 +74,8 @@ final class RouteSource {
     /** The game's item names, for what a step lacks ("3200 × Coins"); null: "items you do not have". */
     volatile IntFunction<String> itemNames;
 
+    /** Tiles walked at most to get out to a teleport's Wilderness level (the Wilderness is about 450 by 450). */
+    static final int WALK_OUT = 300_000;
     /** Snapped ends by spot (and the spot to keep away from): the map does not change, and requests snap thousands. */
     final Map<Long, Integer> snaps = new ConcurrentHashMap<>();
 
@@ -176,6 +178,22 @@ final class RouteSource {
             }
             if (state.inHouse || options.teleports) {
                 house(all, teleportsByName, startEdges, edges);
+            }
+            // No teleport above Wilderness level 30, above 20 only dragonstone jewellery and the royal seed pod: deeper
+            // in, they go from where the walk first gets to their level.
+            int wild = start >= 0 && !isSea(start) ? MapScreen.wildernessLevel(RouteFeature.worldPoint(start)) : 0;
+            if (wild > 20) {
+                var upTo30 = Pathfinder.list("teleports to level 30");
+                int at20 = walkOut(start, 20), at30 = wild > 30 ? walkOut(start, 30) : start;
+                for (var e : List.copyOf(startEdges)) {
+                    int from = upTo30.contains(e.category) ? at30 : at20;
+                    if (from != start) {
+                        startEdges.remove(e);
+                        if (from >= 0) {
+                            edges.add(e.withFrom(from));
+                        }
+                    }
+                }
             }
             if (!options.avoid.isEmpty()) {
                 // Also the house's ways (its jewellery box, portals), by name or kind as the route's steps show them.
@@ -284,6 +302,29 @@ final class RouteSource {
                 // Half ticks: 4 ticks (a teleport spell, a tablet); a home or minigame teleport takes 24 ticks to cast.
                 once ? 48 : 8, category)
                 .weighed(options.saving.teleport + lacking + (charged(member.group, state) ? 1 : 0)));
+        }
+
+        /** The tile nearest on foot where the Wilderness is at most {@code level} (a teleport's limit); else -1. */
+        int walkOut(int start, int level) {
+            var seen = new IntMap(1 << 12);
+            int[] queue = {start};
+            int head = 0, tail = 1;
+            seen.put(start, 0);
+            while (head < tail && tail < WALK_OUT) {
+                int node = queue[head++], x = x(node), y = y(node), z = z(node);
+                if (MapScreen.wildernessLevel(new WorldPoint(x, y, z)) <= level) {
+                    return node;
+                }
+                for (int d = 0; d < 8; d++) {
+                    int next = Tiles.pack(x + DX[d], y + DY[d], z);
+                    if (seen.get(next) == IntMap.MISSING && map.canStep(x, y, z, DX[d], DY[d])) {
+                        seen.put(next, 0);
+                        queue = tail < queue.length ? queue : Arrays.copyOf(queue, tail * 2);
+                        queue[tail++] = next;
+                    }
+                }
+            }
+            return -1;
         }
 
         void transport(Poi poi, List<Edge> into) {
