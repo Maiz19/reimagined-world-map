@@ -1,6 +1,6 @@
 package com.hdmapreforged;
 
-import static com.hdmapreforged.PartyMapMembers.*;
+import static com.hdmapreforged.PartyMembers.*;
 import static java.lang.Math.*;
 import static com.hdmapreforged.FriendsWidget.*;
 import static com.hdmapreforged.MapView.*;
@@ -9,8 +9,6 @@ import java.awt.*;
 import java.awt.geom.*;
 import java.awt.image.*;
 import java.util.*;
-import java.util.List;
-import java.util.function.*;
 import lombok.*;
 import net.runelite.api.*;
 
@@ -33,10 +31,7 @@ final class MemberPages {
     static final int[][] WORN = {{1, 0}, {0, 1}, {1, 1}, {0, 2}, {1, 2}, {2, 2}, null, {1, 3}, null, {0, 4},
         {1, 4}, null, {2, 4}, {2, 1}};
 
-    final Images images;
-    final LongFunction<Gear> gear;
-    final LongFunction<Session> session;
-    final LongFunction<List<Drop>> drops;
+    final PartyMap party;
     int page;
 
     /** The orbs' height: one row of four where they fit, else two rows. */
@@ -50,7 +45,7 @@ final class MemberPages {
 
     /** Painted at (x, top), {@code width} wide; true while experience drops rise in it. */
     boolean paint(Graphics2D g, long id, double x, double top, int width, Clicks clicks, Runnable repaint) {
-        var shared = gear.apply(id);
+        var shared = party.members.gear(id);
         double tabW = width / (double) PAGES.length;
         g.setFont(ROW);
         if (g.getFontMetrics().stringWidth("Session") > tabW - 8) {
@@ -73,15 +68,15 @@ final class MemberPages {
         double y0 = top + TABS_H + statusHeight(width), slotW = min(SLOT_W, width / 4.0);
         g.setFont(ROW);
         if (page == SESSION) {
-            paintSession(g, session.apply(id), x + 4, y0, width - 8, slotW);
+            paintSession(g, party.members.session(id), x + 4, y0, width - 8, slotW);
         } else if (shared == null) {
             g.setColor(FRIEND);
-            wrap(g, "Nothing shared yet. They share it with this plugin's setting.", x + 4, y0 + 16, width - 8);
+            wrap(g, PoiType.t("t25"), x + 4, y0 + 16, width - 8);
         } else if (page == 2) {
             double skillW = min(SKILL_W, width / 3.0), left = x + (width - 3 * skillW) / 2;
             for (int k = 0; k < HdMapPartyState.SKILLS; k++) {
                 double sx = left + (k % 3) * skillW, sy = y0 + (k / 3) * SKILL_H;
-                BufferedImage icon = images.skill(k);
+                BufferedImage icon = party.skill(k);
                 if (icon != null) {
                     g.drawImage(icon, (int) sx + 2, (int) sy + 3, 16, 16, null);
                 }
@@ -102,7 +97,7 @@ final class MemberPages {
                 }
             }
         }
-        return PartyMapOverlay.paintXp(g, drops.apply(id), images::skill, x + width - 64, y0 + 60);
+        return PartyOverlay.paintXp(g, party.xp(id), party::skill, x + width - 64, y0 + 60);
     }
 
     /** What a member got this session: the shared drops' worth and the best of them, experience by skill. */
@@ -114,28 +109,28 @@ final class MemberPages {
         }
         var metrics = g.getFontMetrics();
         g.setColor(Color.WHITE);
-        text(g, "Drops " + PartyMapOverlay.coins(got.value), x, y + 18);
+        text(g, "Drops " + PartyOverlay.coins(got.value), x, y + 18);
         String xp = "XP +" + AMOUNT.format(Arrays.stream(got.xp).sum());
         text(g, xp, x + w - metrics.stringWidth(xp), y + 18);
         // The best drops a row each, an item picture high; under them the skills most gained, three to a row.
         for (int k = 0; k < got.top.size(); k++) {
             var drop = got.top.get(k);
             slot(g, x - 4, y + 22 + k * ROW_H, slotW, drop.item, drop.quantity);
-            g.setColor(drop.name != null ? PartyMapOverlay.UNTRADEABLE : WORLD);
-            String worth = drop.name != null ? drop.name : PartyMapOverlay.coins(drop.value);
+            g.setColor(drop.name != null ? PartyOverlay.UNTRADEABLE : WORLD);
+            String worth = drop.name != null ? drop.name : PartyOverlay.coins(drop.value);
             text(g, fit(worth, metrics, (int) (w - slotW)), x + slotW, y + 46 + k * ROW_H);
         }
         int[] best = got.best(6);
         double cell = w / 3;
         for (int k = 0; k < best.length; k++) {
-            BufferedImage icon = images.skill(best[k]);
+            BufferedImage icon = party.skill(best[k]);
             double sx = x + k % 3 * cell, sy = y + 32 + SESSION_DROPS * ROW_H + k / 3 * 20;
             if (icon != null) {
                 g.drawImage(icon, (int) sx, (int) sy, 14, 14, null);
             }
             g.setColor(WORLD);
             long gained = got.xp[best[k]];
-            text(g, "+" + (gained < 10_000 ? AMOUNT.format(gained) : PartyMapOverlay.coins(gained)), sx + 16, sy + 12);
+            text(g, "+" + (gained < 10_000 ? AMOUNT.format(gained) : PartyOverlay.coins(gained)), sx + 16, sy + 12);
         }
     }
 
@@ -151,7 +146,7 @@ final class MemberPages {
             {shared.run, 100}, {shared.special, 100}};
         for (int k = 0; k < orbs.length; k++) {
             Orbs.paint(g, (int) (x + k % perRow * (Orbs.WIDTH + gap)), (int) y + 2 + k / perRow * STATUS_H,
-                Orbs.Kind.values()[k], orbs[k][0], orbs[k][1], images::sprite);
+                Orbs.Kind.values()[k], orbs[k][0], orbs[k][1], party::sprite);
         }
     }
 
@@ -171,7 +166,7 @@ final class MemberPages {
     }
 
     void slot(Graphics2D g, double x, double y, double w, int id, int quantity) {
-        BufferedImage image = id < 0 ? null : images.item(id, max(1, quantity));
+        BufferedImage image = id < 0 ? null : party.item(id, max(1, quantity));
         if (image != null) {
             g.drawImage(image, (int) (x + (w - image.getWidth()) / 2), (int) (y + (SLOT_H - image.getHeight()) / 2.0), null);
         }

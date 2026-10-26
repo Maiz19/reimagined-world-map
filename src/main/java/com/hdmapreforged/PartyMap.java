@@ -2,8 +2,9 @@ package com.hdmapreforged;
 
 import static com.hdmapreforged.PartyMapRules.*;
 import static com.hdmapreforged.FriendsWidget.*;
-import static com.hdmapreforged.HdMapReforgedConfig.*;
+import static com.hdmapreforged.MapConfig.*;
 import static com.hdmapreforged.HdMapPartyState.*;
+import static com.hdmapreforged.PoiType.t;
 
 import java.awt.*;
 import java.awt.Point;
@@ -18,7 +19,6 @@ import javax.inject.*;
 import javax.swing.*;
 import javax.swing.Timer;
 import lombok.*;
-import lombok.extern.slf4j.*;
 import net.runelite.api.*;
 import net.runelite.api.coords.*;
 import net.runelite.api.events.*;
@@ -38,9 +38,8 @@ import net.runelite.client.util.*;
  * Party members on the map through RuneLite's party service. Nothing is sent outside a party, and a party is never
  * joined without a user click: "Rejoin party" rejoins the remembered last one.
  */
-@Slf4j
 @RequiredArgsConstructor(onConstructor_ = @Inject)
-public final class PartyMap implements MapPanel.Friends, Images {
+public final class PartyMap {
     static final String LAST_KEY = "partyLast";
     static final List<Class<? extends WebsocketMessage>> MESSAGES =
         List.of(HdMapPartyLocation.class, HdMapPartyState.class, HdMapPartyDrop.class);
@@ -51,29 +50,21 @@ public final class PartyMap implements MapPanel.Friends, Images {
     final WSClient wsClient;
     final EventBus eventBus;
     final ConfigManager configManager;
-    final HdMapReforgedConfig config;
+    final MapConfig config;
     final ItemManager itemManager;
     final SkillIconManager skillIcons;
     final ClientThread clientThread;
     final SpriteManager spriteManager;
 
-    final PartyMapMembers members = new PartyMapMembers();
+    final PartyMembers members = new PartyMembers();
     final Throttle throttle = new Throttle();
-    // Initializers may read later or constructor-set fields only through "this" or "PartyMap.this".
-    final PartyMapOverlay overlay = new PartyMapOverlay(this::markers, () -> this.myWorld);
-
-    {
-        overlay.selected = id -> this.widgets.values().stream().anyMatch(w -> w.selected() == id);
-        overlay.hovered = id -> id == this.hoveredMember;
-        overlay.loot = id -> members.loot(id, System.currentTimeMillis());
-        overlay.xp = id -> members.drops(id, System.currentTimeMillis());
-        overlay.itemImage = this::item;
-        overlay.skillImage = this::skill;
-        overlay.ticker = new PartyMapOverlay.Ticker(this::repaint);
-    }
-
-    /** Swing thread only; each view's value undoes what {@link #start} added to it. */
-    final Map<MapView, Runnable> views = new LinkedHashMap<>();
+    final PartyOverlay overlay = new PartyOverlay(this);
+    /** The overlay's: repaints the views while drops rise. */
+    final PartyOverlay.Ticker ticker = new PartyOverlay.Ticker(this::repaint);
+    /**
+     * Each view's party list; Swing thread only. The plugin makes its views anew at each start, so a stop leaves them
+     * as they are.
+     */
     final Map<MapView, FriendsWidget> widgets = new LinkedHashMap<>();
     volatile int myWorld;
     /** The party this plugin joined for the user, or null. */
@@ -81,7 +72,7 @@ public final class PartyMap implements MapPanel.Friends, Images {
     volatile long lastChange = Long.MIN_VALUE / 2;
     Timer idleCheck;
     volatile boolean sentOnline;
-    volatile Long loggedOutSince;
+    volatile Long outSince;
 
     volatile boolean gearChanged = true;
     /** The members as last read without a clash with the websocket thread. */
@@ -104,19 +95,13 @@ public final class PartyMap implements MapPanel.Friends, Images {
                 repaint();
             });
         }
-        loggedOutSince = client.getGameState() == GameState.LOGGED_IN ? null : System.currentTimeMillis();
+        outSince = client.getGameState() == GameState.LOGGED_IN ? null : System.currentTimeMillis();
         SwingUtilities.invokeLater(() -> {
             for (var view : maps) {
-                MapView.MenuContributor menu = (popup, point) -> contribute(popup, view);
+                var widget = new FriendsWidget(this, view, new MemberPages(this));
                 view.addOverlay(overlay);
-                view.menuContributors.add(menu);
-                FriendsWidget widget = new FriendsWidget(() -> members.markers(System.currentTimeMillis()),
-                    this::groupMembers, party::isInParty,
-                    () -> myWorld, config::partyFriendsTab, row -> follow(view, row.id), view::repaint,
-                    new PartyMapOverlay.Ticker(view::repaint));
-                widget.canJoin = () -> !party.isInParty() && lastParty() != null;
-                widget.join = () -> join(view);
-                MapView.ClickCatcher catcher = (at, projection) -> {
+                view.menus.add((popup, point) -> contribute(popup, view));
+                view.clickCatcher = (at, projection) -> {
                     long best = memberAt(at, projection);
                     if (best < 0) {
                         return false;
@@ -126,7 +111,6 @@ public final class PartyMap implements MapPanel.Friends, Images {
                     repaint();
                     return true;
                 };
-                view.clickCatchers.add(catcher);
                 var pointing = new MouseAdapter() {
                     public void mouseMoved(MouseEvent e) {
                         long now = memberAt(e.getPoint(), view.projection());
@@ -145,23 +129,12 @@ public final class PartyMap implements MapPanel.Friends, Images {
                 };
                 view.addMouseMotionListener(pointing);
                 view.addMouseListener(pointing);
-                widget.pages = pages();
                 widgets.put(view, widget);
                 view.addWidget(widget);
-                views.put(view, () -> {
-                    view.removeOverlay(overlay);
-                    view.menuContributors.remove(menu);
-                    view.clickCatchers.remove(catcher);
-                    view.removeMouseMotionListener(pointing);
-                    view.removeMouseListener(pointing);
-                    view.removeWidget(widget);
-                    widget.ticker.stop();
-                });
             }
             // Leaves a party we rejoined after long logged out, as RuneLite's Party plugin does.
             idleCheck = new Timer(30_000, e -> {
-                if (leaveIdle(joinedCode, party.getPartyPassphrase(), loggedOutSince, System.currentTimeMillis())) {
-                    log.debug("Leaving the party we rejoined after a long time logged out");
+                if (leaveIdle(joinedCode, party.getPartyPassphrase(), outSince, System.currentTimeMillis())) {
                     leave();
                 }
             });
@@ -177,7 +150,6 @@ public final class PartyMap implements MapPanel.Friends, Images {
         try {
             sendOffline();
         } catch (RuntimeException e) {
-            log.debug("Party messages not sent on stopping", e);
         }
         if (config.partyShareGear()) {
             unshare();
@@ -195,10 +167,9 @@ public final class PartyMap implements MapPanel.Friends, Images {
                 idleCheck.stop();
                 idleCheck = null;
             }
-            views.values().forEach(Runnable::run);
-            views.clear();
+            widgets.values().forEach(widget -> widget.ticker.stop());
             widgets.clear();
-            overlay.ticker.stop();
+            ticker.stop();
             if (leaveOnShutdown(joinedCode, party.getPartyPassphrase())) {
                 party.changeParty(null);
             }
@@ -233,44 +204,25 @@ public final class PartyMap implements MapPanel.Friends, Images {
 
     final Map<Integer, BufferedImage> sprites = new ConcurrentHashMap<>();
     /** The sidebar's and the map's pictures of what members share. */
-    public BufferedImage skill(int ordinal) {
+    BufferedImage skill(int ordinal) {
         var skills = Skill.values();
         return ordinal < 0 || ordinal >= Math.min(SKILLS, skills.length) ? null
             : skillIcons.getSkillImage(skills[ordinal], true);
     }
 
-    public BufferedImage sprite(int id) {
+    BufferedImage sprite(int id) {
         return sprites.get(id);
     }
 
     /** The sidebar's party list. */
-    public boolean inGroup() {
-        return party.isInParty();
-    }
-
-    public List<Row> rows() {
+    List<Row> rows() {
         // Whether the map draws them or not: the list says where they are.
         return FriendsWidget.rows(members.markers(System.currentTimeMillis()), groupMembers());
     }
 
-    public int world() {
-        return myWorld;
-    }
-
-    public PartyMapMembers.Gear gear(long id) {
-        return members.gear(id);
-    }
-
-    public Images images() {
-        return this;
-    }
-
-    public boolean canRejoin() {
-        return lastParty() != null;
-    }
-
-    public void follow(long id) {
-        views.keySet().forEach(view -> follow(view, id));
+    /** Has the maps follow a member. */
+    void follow(long id) {
+        widgets.keySet().forEach(view -> follow(view, id));
     }
 
     /** Follows a member clicked: the map keeps them in view as they move. Swing thread. */
@@ -303,14 +255,14 @@ public final class PartyMap implements MapPanel.Friends, Images {
                 // RuneLite names a member "<unknown>" until they log in and send their name.
                 String name = member.getDisplayName();
                 list.add(new Member(member.getMemberId(),
-                    name == null || name.startsWith("<") ? null : PartyMapMembers.clean(name)));
+                    name == null || name.startsWith("<") ? null : PartyMembers.clean(name)));
             }
         }
         lastGroup = List.copyOf(list);
         return list;
     }
 
-    List<PartyMapMembers.Marker> markers() {
+    List<PartyMembers.Marker> markers() {
         return config.partyShowMembers() ? members.markers(System.currentTimeMillis()) : Collections.emptyList();
     }
 
@@ -340,10 +292,10 @@ public final class PartyMap implements MapPanel.Friends, Images {
     public void onGameStateChanged(GameStateChanged event) {
         GameState state = event.getGameState();
         if (state == GameState.LOGGED_IN) {
-            loggedOutSince = null;
+            outSince = null;
         } else if (state == GameState.LOGIN_SCREEN) {
-            if (loggedOutSince == null) {
-                loggedOutSince = System.currentTimeMillis();
+            if (outSince == null) {
+                outSince = System.currentTimeMillis();
             }
             // The next login may be another account: a fresh whole one.
             fresh.set(true);
@@ -478,7 +430,7 @@ public final class PartyMap implements MapPanel.Friends, Images {
                 valuable.add(new HdMapPartyDrop(stack.getId(), stack.getQuantity(), value, untradeable));
             }
         }
-        // Only the best few, as the receivers order them (PartyMapMembers.BEST: untradeables first); the map shows no more.
+        // Only the best few, as the receivers order them (PartyMembers.BEST: untradeables first); the map shows no more.
         valuable.sort(Comparator.comparing((HdMapPartyDrop d) -> !d.untradeable()).thenComparingLong(d -> -d.value()));
         for (var drop : valuable.subList(0, Math.min(valuable.size(), MAX_DROPS_PER_LOOT))) {
             party.send(drop);
@@ -501,7 +453,7 @@ public final class PartyMap implements MapPanel.Friends, Images {
                 long value = itemManager.getItemPriceWithSource(item, false) * message.quantity();
                 // An untradeable one shows by name, as it has no price.
                 String name = tradeable(item) ? null : itemManager.getItemComposition(item).getName();
-                members.loot(message.getMemberId(), new PartyMapMembers.Loot(item, message.quantity(), value,
+                members.loot(message.getMemberId(), new PartyMembers.Loot(item, message.quantity(), value,
                     System.currentTimeMillis(), name));
                 repaint();
             }
@@ -570,7 +522,7 @@ public final class PartyMap implements MapPanel.Friends, Images {
         return ids;
     }
 
-    public BufferedImage item(int id, int quantity) {
+    BufferedImage item(int id, int quantity) {
         long key = (long) id << 32 | quantity;
         if (itemImages.size() > 512 && !itemImages.containsKey(key)) {
             itemImages.clear();
@@ -633,7 +585,7 @@ public final class PartyMap implements MapPanel.Friends, Images {
 
     void repaint() {
         SwingUtilities.invokeLater(() -> {
-            for (var view : views.keySet()) {
+            for (var view : widgets.keySet()) {
                 view.followMember();
                 view.repaint();
             }
@@ -644,24 +596,12 @@ public final class PartyMap implements MapPanel.Friends, Images {
         });
     }
 
-    /** A member's details as the map's card and the sidebar both paint them, each with its own page. */
-    public MemberPages pages() {
-        return new MemberPages(this, members::gear, members::session, this::xp);
-    }
-
-    /** The sidebar's, told of members' news; see {@link MapPanel.Friends#watch}. */
+    /** The sidebar's, told of members' news. */
     volatile Runnable sidebarNews;
 
-    public void watch(Runnable news) {
-        sidebarNews = news;
-    }
-
-    public List<PartyMapMembers.Drop> xp(long id) {
+    /** A member's experience drops rising now. */
+    List<PartyMembers.Drop> xp(long id) {
         return members.drops(id, System.currentTimeMillis());
-    }
-
-    public PartyMapMembers.Session session(long id) {
-        return members.session(id);
     }
 
     void contribute(JPopupMenu popup, MapView view) {
@@ -669,7 +609,7 @@ public final class PartyMap implements MapPanel.Friends, Images {
         String current = party.getPartyPassphrase();
         for (var marker : markers()) {
             String name = marker.name != null ? marker.name : "party member";
-            friends.add("Show " + name + (marker.stale() ? " (" + PartyMapOverlay.ago(marker.ageMillis) + ")" : ""))
+            friends.add("Show " + name + (marker.stale() ? " (" + PartyOverlay.ago(marker.ageMillis) + ")" : ""))
                 .addActionListener(a -> view.focus(marker.point));
         }
         if (friends.getMenuComponentCount() > 0) {
@@ -681,7 +621,7 @@ public final class PartyMap implements MapPanel.Friends, Images {
             friends.add("Rejoin party").addActionListener(a -> join(view));
         }
         if (friends.getMenuComponentCount() == 0) {
-            friends.add("Join a party in RuneLite's Party panel").setEnabled(false);
+            friends.add(t("dJoinHint")).setEnabled(false);
         }
         popup.addSeparator();
         popup.add(friends);
@@ -692,7 +632,8 @@ public final class PartyMap implements MapPanel.Friends, Images {
         return last == null || last.trim().isEmpty() ? null : last.trim();
     }
 
-    public void join(Component view) {
+    /** Rejoins the last party. */
+    void join(Component view) {
         String code = lastParty();
         if (code == null) {
             return;
@@ -704,13 +645,13 @@ public final class PartyMap implements MapPanel.Friends, Images {
             case INVALID_CODE:
                 return;
             case NOT_LOGGED_IN:
-                tell(view, "Log in to the game first, then rejoin the party.");
+                tell(view, t("dLogInFirst"));
                 return;
             case TOO_SOON:
-                tell(view, "You just changed party. Try again in a few seconds.");
+                tell(view, t("dTooSoon"));
                 return;
             case CONFIRM_LEAVE_OTHER:
-                if (JOptionPane.showConfirmDialog(view, "You are in another party. Leave it and rejoin your last party?",
+                if (JOptionPane.showConfirmDialog(view, t("dLeaveOther"),
                     "Reimagined World Map", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) {
                     return;
                 }

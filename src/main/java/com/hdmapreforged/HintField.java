@@ -52,9 +52,7 @@ final class HintField extends JTextField {
             var m = g2.getFontMetrics();
             g2.drawString(hint.get(), getInsets().left + 2, (getHeight() + m.getAscent() - m.getDescent()) / 2);
         } else {
-            int x = getWidth() - getInsets().right + CROSS / 2, y = getHeight() / 2;
-            g2.drawLine(x - 3, y - 3, x + 3, y + 3);
-            g2.drawLine(x - 3, y + 3, x + 3, y - 3);
+            PoiIcons.glyph(g2, "CLEAR", getWidth() - getInsets().right + CROSS / 2, getHeight() / 2);
         }
         g2.dispose();
     }

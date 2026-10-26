@@ -9,7 +9,7 @@ public class HdMapPartyDrop extends PartyMemberMessage {
     /** Item id and quantity; its worth only for picking the sender's few (each receiver prices it itself). */
     private final int i, q;
     private final transient long v;
-    /** Untradeable: picked first, as receivers list them (PartyMapMembers.BEST). */
+    /** Untradeable: picked first, as receivers list them (PartyMembers.BEST). */
     private final transient boolean u;
 
     /** -1 when not believable. */

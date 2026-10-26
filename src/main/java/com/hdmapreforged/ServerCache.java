@@ -1,12 +1,12 @@
 package com.hdmapreforged;
 
 import java.io.*;
+import java.nio.charset.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.*;
 import java.util.regex.*;
 import lombok.*;
-import lombok.extern.slf4j.*;
 import net.runelite.client.util.*;
 
 /**
@@ -14,12 +14,13 @@ import net.runelite.client.util.*;
  * version's map list, region table, places and route tables, and NPC pictures. A player asks the server for each file
  * once; once another version of a kind is in use ({@link #prune}), the old version's folder goes.
  */
-@Slf4j
 @RequiredArgsConstructor
 final class ServerCache {
     static final Pattern NAME = Pattern.compile("[A-Za-z0-9_.-]{1,64}");
     static final Pattern KIND = Pattern.compile("[a-z]{1,16}");
     static final int MAX_BYTES = 16 * 1024 * 1024;
+    /** In the plugin's folder: the map version last shown, so the next start shows it before the server answers. */
+    static final String KNOWN = "server-map-version.txt";
 
     final Filepath root;
     final ExecutorService io;
@@ -61,27 +62,32 @@ final class ServerCache {
             ? root.joinSegment(kind).joinSegment(version).joinSegment(name) : null;
     }
 
-    /** IO thread. */
+    /** IO thread; null when missing, unreadable or too large. */
     static byte[] read(Filepath file) {
-        if (!file.isFile()) {
-            return null;
-        }
-        try (InputStream in = file.openInputStream()) {
-            var bytes = in.readNBytes(MAX_BYTES + 1);
-            return bytes.length > MAX_BYTES ? null : bytes;
+        try {
+            return file.isFile() && file.size() <= MAX_BYTES ? TileCache.read(file) : null;
         } catch (IOException e) {
-            log.debug("Could not read {}", file, e);
             return null;
         }
     }
 
     /** IO thread. */
-    void keep(Filepath file, byte[] bytes) {
+    static void keep(Filepath file, byte[] bytes) {
         try {
-            TileCache.writeAtomically(file, bytes);
+            TileCache.writeSafe(file, bytes);
         } catch (IOException e) {
-            log.debug("Could not keep {}", file, e);
         }
+    }
+
+    /** The {@link #KNOWN} version: its first line (older plugins wrote when they asked on the second), or null. */
+    static String known(Filepath file) {
+        var bytes = read(file);
+        String version = bytes == null ? null : new String(bytes, StandardCharsets.UTF_8).split("\n")[0].trim();
+        return MapServer.isSafeVersion(version) ? version : null;
+    }
+
+    static void remember(Filepath file, String version) {
+        keep(file, (version + "\n").getBytes(StandardCharsets.UTF_8));
     }
 
     /**
@@ -101,7 +107,6 @@ final class ServerCache {
                 .forEach(TileCache::deleteTree);
         } catch (IOException | UncheckedIOException e) {
             // A folder another prune removed meanwhile: what is left goes next time.
-            log.debug("Could not look through {}", folder, e);
         }
     }
 }

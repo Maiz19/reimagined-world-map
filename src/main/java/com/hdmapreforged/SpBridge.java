@@ -7,7 +7,7 @@ import net.runelite.api.coords.*;
 import net.runelite.client.events.*;
 
 /** Talking to the Shortest Path plugin through RuneLite plugin messages (its public message format only). */
-final class ShortestPathBridge {
+final class SpBridge {
     static final String NAMESPACE = "shortestpath";
     static final String PATH = "path";
     static final String CLEAR = "clear";
@@ -53,7 +53,7 @@ final class ShortestPathBridge {
     }
 
     /** A path message's avoidWilderness override (Shortest Clue turns it off for clues in the Wilderness); null when none. */
-    static Boolean avoidWilderness(PluginMessage message) {
+    static Boolean noWild(PluginMessage message) {
         Object value = config(message).get("avoidWilderness");
         if (value instanceof String && ((String) value).matches("(?i)true|false")) {
             value = Boolean.valueOf((String) value);
@@ -104,7 +104,7 @@ final class ShortestPathBridge {
         var data = message.getData();
         Object target = data == null ? null : data.get(TARGET);
         return (target instanceof Collection<?> ? ((Collection<?>) target).stream() : Stream.of(target))
-            .map(ShortestPathBridge::point).filter(Objects::nonNull).limit(MAX_POINTS).collect(Collectors.toList());
+            .map(SpBridge::point).filter(Objects::nonNull).limit(MAX_POINTS).collect(Collectors.toList());
     }
 
     /** A WorldPoint, or packed as x | y << 15 | plane << 30 (-1 none); null outside the game world. */

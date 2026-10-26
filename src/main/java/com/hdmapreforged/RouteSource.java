@@ -1,5 +1,6 @@
 package com.hdmapreforged;
 
+import static com.hdmapreforged.PoiType.t;
 import static java.util.Arrays.*;
 import static java.util.stream.Collectors.*;
 import static com.hdmapreforged.RouteFiles.*;
@@ -39,7 +40,7 @@ final class RouteSource {
         /** The way anyone could go, shown when the player's way does not arrive (not the "ignore" settings). */
         final boolean fallback;
         /** Stay out of the Wilderness unless the route starts or ends there. */
-        final boolean avoidWilderness;
+        final boolean noWild;
         /** Sail also to places on land that can be walked to; else only from or to the sea, or where walking does not get. */
         @With
         final boolean sailToLand;
@@ -194,13 +195,13 @@ final class RouteSource {
                 // On a boat without the Sailing data: still let the route sail home.
                 level = Math.max(1, state.sailingLevel);
             }
-            return new RouteRequest(start, target, startEdges, edges, level, state.running, nodeLimit, options.avoidWilderness);
+            return new RouteRequest(start, target, startEdges, edges, level, state.running, nodeLimit, options.noWild);
         }
 
         void gates(List<Edge> into) {
             for (Gate gate : GATES.get()) {
                 // Its quests and levels, and the items it takes (a key, a skavid map and a light) carried or worn.
-                if (!usable(gate.needs) || !state.items.has(gate.needs.items)) {
+                if (!meets(gate.needs)) {
                     continue;
                 }
                 int a = snap(gate.from, gate.to), b = snap(gate.to, gate.from);
@@ -231,7 +232,7 @@ final class RouteSource {
                 // Any of its ways the player meets: with a grapple, or bare-handed at a higher level.
                 for (var way : passage.ways) {
                     Needs needs = new Needs(way[0], way[1], way[2], way[3]);
-                    if (usable(needs) && state.items.has(needs.items)) {
+                    if (meets(needs)) {
                         Edge e = passage.edge;
                         into.add(new Edge(e.from, e.to, e.kind, e.name, detail(null, needs), e.cost));
                         break;
@@ -244,13 +245,18 @@ final class RouteSource {
             return unlocks == null || unlocks.usable(needs);
         }
 
+        /** Usable, and its items carried or worn. */
+        boolean meets(Needs needs) {
+            return usable(needs) && state.items.has(needs.items);
+        }
+
         /**
          * A teleport from anywhere ({@code into}); in a house a minigame teleport only from outside its portal
          * ({@code edges}): the game does not let one cast it in a player-owned house.
          */
         void teleport(Poi member, List<Edge> into, List<Edge> edges) {
             if (HouseTracker.isTemplate(member.location.getX(), member.location.getY())
-                || !usable(member.needs) || !state.items.has(member.needs.items)
+                || !meets(member.needs)
                 || unlocks != null && unlocks.waiting(member.name, member.group, minute)) {
                 return;
             }
@@ -307,9 +313,7 @@ final class RouteSource {
                     continue;
                 }
                 String name = describe(poi, link);
-                // A shortcut left out before 0.3.2 was saved with its other side ("… → other side").
-                if (avoids(name, poi.type.displayName) || poi.type == AGILITY_SHORTCUT && link.label != null
-                    && options.avoid.contains((name + " → " + link.label).toLowerCase(ROOT))) {
+                if (avoids(name, poi.type.displayName)) {
                     continue;
                 }
                 var fee = Fees.at(poi.location.getX(), poi.location.getY(), poi.location.getPlane());
@@ -332,7 +336,7 @@ final class RouteSource {
             if (!state.sailing || state.sailingLevel < level(poi.needs) || !usable(poi.needs)) {
                 return;
             }
-            int x = poi.location.getX(), y = poi.location.getY(), land = map.nearestWalkable(x, y, 0, 8);
+            int x = poi.location.getX(), y = poi.location.getY(), land = map.walkableNear(x, y, 0, 8);
             int water = sea.nearestBlock(x, y, DOCK_REACH, state.sailingLevel);
             if (land < 0 || water < 0) {
                 return;
@@ -354,12 +358,12 @@ final class RouteSource {
                 hint = summon;
                 cost = 16;
             } else if (stream(options.shipwrights).anyMatch(s -> distance(s, land) <= SHIPWRIGHT_REACH)) {
-                hint = "Ask the shipwright here to bring your boat (fee)";
+                hint = t("shipwright");
                 cost = 60;
             } else if (state.boats.length == 0 && !onBoat
                 && stream(PORTS.get()).anyMatch(port -> distance(port, land) <= SHIPWRIGHT_REACH)) {
                 // Where the boat lies is not known yet (not logged in): a port, where it may lie; not any dock.
-                hint = "If your boat is moored here (a shipwright can bring it)";
+                hint = t("boatMaybe");
             } else {
                 return;
             }
@@ -370,7 +374,7 @@ final class RouteSource {
         String boatSpell(String kind) {
             var spell = own(kind).stream().findFirst().orElse(null);
             return spell == null ? null : state.items.has(spell[7]) ? spell[1]
-                : usable(needs(spell)) && state.items.has(needs(spell).items) ? "Spell (standard spellbook)" : null;
+                : meets(needs(spell)) ? "Spell (standard spellbook)" : null;
         }
 
         /** To each boat with the greater teleport focus: by the Sailing cape, a tablet or the spell, when the player can. */
@@ -379,7 +383,7 @@ final class RouteSource {
                 .map(c -> c[1]).findFirst().orElseGet(() -> boatSpell("boat teleport"));
             for (int i = 0; means != null && i < state.boats.length; i++) {
                 int land = i >= state.boatFocus.length || state.boatFocus[i] < 2 ? -1
-                    : map.nearestWalkable(x(state.boats[i]), y(state.boats[i]), 0, 12);
+                    : map.walkableNear(x(state.boats[i]), y(state.boats[i]), 0, 12);
                 if (land >= 0) {
                     into.add(new Edge(Edge.ANYWHERE, land, Kind.TELEPORT, "Teleport to Boat", means, 10));
                 }
@@ -443,7 +447,7 @@ final class RouteSource {
                         // Only to a floor with stairs where these stand: they go up or down, seldom both.
                         if (plan.things.entrySet().stream().anyMatch(t -> z(t.getKey()) == other
                             && distance(t.getKey(), node) <= 3 && stairs(t.getValue()))) {
-                            out.add(new Edge(Edge.ANYWHERE, map.nearestWalkable(x(node), y(node), other, 3),
+                            out.add(new Edge(Edge.ANYWHERE, map.walkableNear(x(node), y(node), other, 3),
                                 Kind.STAIRS, name, null, 5));
                         }
                     }
@@ -478,7 +482,7 @@ final class RouteSource {
                 Needs needs = needs(way);
                 int lack = lacking(needs);
                 // Set to land outside, the capes do so; the spell and the tablet keep an option to land inside.
-                if ((state.landsInside || !way[7].equals("outside")) && usable(needs) && state.items.has(needs.items)
+                if ((state.landsInside || !way[7].equals("outside")) && meets(needs)
                     && (best == null || lack < lacking)
                     && !avoids(way[1] + (state.landsInside ? "" : " (inside)"), "Teleports")) {
                     best = way;
@@ -724,7 +728,7 @@ final class RouteSource {
         long key = (long) pack(point) << 32 | pack(other) & 0xffffffffL;
         // A spot one can stand on is where the game puts one, also in ground shut in but for the jump itself (the fairy
         // ring BIS in the zoo's unicorn pen): only a spot on an object or a wall moves to the nearest open ground.
-        return snaps.computeIfAbsent(key, k -> walkable(point) ? pack(point) : map.nearestWalkable(point.getX(),
+        return snaps.computeIfAbsent(key, k -> walkable(point) ? pack(point) : map.walkableNear(point.getX(),
             point.getY(), point.getPlane(), SNAP, other.getX(), other.getY(), pocket));
     }
 
@@ -743,12 +747,12 @@ final class RouteSource {
         return unlimited == null || !state.items.has(unlimited);
     }
 
-    /** The planted spirit trees that stand grown for this account (see {@link PlantedSpiritTrees}). */
+    /** The planted spirit trees that stand grown for this account (see {@link Planted}). */
     volatile Set<String> plantedTrees = Collections.emptySet();
 
     /** A planted spirit tree's stop the player has no grown tree at: not travelled from or to. */
     boolean notPlanted(Poi poi) {
-        return PlantedSpiritTrees.planted(poi) && !plantedTrees.contains(poi.name);
+        return Planted.planted(poi) && !plantedTrees.contains(poi.name);
     }
 
     static final String TYPE = "type:";

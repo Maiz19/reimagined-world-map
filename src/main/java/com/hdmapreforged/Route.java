@@ -70,7 +70,7 @@ final class Route {
     final Reached reached;
     /** Through the Wilderness though the player keeps out of it: no way around it gets there. */
     @With(PACKAGE)
-    final boolean throughWilderness;
+    final boolean viaWild;
     /** The search left out a step or jump into the Wilderness (kept out of it): through it, it may get further. */
     @With(PACKAGE)
     final boolean keptOut;
@@ -94,7 +94,7 @@ final class Route {
     /** This route, ending near the target of {@code shut}, which proved it out of reach. */
     Route near(Route shut) {
         return new Route(Outcome.NEAREST, steps, cost, shut.target, end, shut.exhausted, limited, nodes, shut.reached,
-            throughWilderness, keptOut);
+            viaWild, keptOut);
     }
 
     static final int NEAR = 12;

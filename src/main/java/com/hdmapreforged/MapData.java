@@ -32,7 +32,7 @@ final class MapData {
         final String kind;
     }
 
-    /** One of the game's own map icons (drawn by {@link MapIconLayer} from the game's sprites) with what it stands for. */
+    /** One of the game's own map icons (drawn by {@link IconLayer} from the game's sprites) with what it stands for. */
     static final class Icon {
         final WorldPoint location;
         /** Differs from {@link #location} where the map draws a place elsewhere (the Keldagrim tunnel). */
@@ -50,6 +50,11 @@ final class MapData {
         /** What the Icons panel shows and hides it by: its type's name, else its key's ("Fairy ring (AIQ)": "Fairy ring"). */
         final String toggle;
         final Layer group;
+        /**
+         * Our places it stands for besides its own (places.json, worked out by the builder): passages the map does not
+         * draw whose way in it is, ours beside it named by its key ("Shipwright Sornik" by "Shipwright"); not drawn.
+         */
+        final List<Poi> covers = new ArrayList<>();
 
         Icon(WorldPoint location, BaseMap map, Poi poi, boolean own, int element, String kind) {
             this.location = location;
@@ -199,8 +204,12 @@ final class MapData {
             var at = point(icon.at);
             var poi = icon.own == null ? reading.poi(icon.poi, 0) : item(listed, icon.own);
             if (at != null && poi != null) {
-                icons.add(new Icon(at, reading.map(icon.map), poi, icon.own != null, icon.element,
-                    keys.get(icon.element)));
+                var made = new Icon(at, reading.map(icon.map), poi, icon.own != null, icon.element, keys.get(icon.element));
+                for (int i : icon.covers == null ? new int[0] : icon.covers) {
+                    made.covers.add(item(listed, i));
+                }
+                made.covers.removeIf(Objects::isNull);
+                icons.add(made);
             }
         }
         // Labels and kinds as listed too, null where left out: a search hit gives its target's index.
@@ -405,6 +414,8 @@ final class MapData {
         /** The index in pois of the place the icon stands for; else {@link #poi}, its own place. */
         Integer own;
         PoiJson poi;
+        /** {@link Icon#covers} by their index in pois. */
+        int[] covers;
     }
 
     static final class LabelJson {

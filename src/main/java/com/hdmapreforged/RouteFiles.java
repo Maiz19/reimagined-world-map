@@ -15,6 +15,8 @@ final class RouteFiles {
     static final String DIR = "/com/hdmapreforged/route/";
     static final int MAX_FILE_BYTES = 16 * 1024 * 1024, MAX_TOTAL_BYTES = 32 * 1024 * 1024, MAX_FILES = 100;
     static volatile Map<String, byte[]> files;
+    /** A version's files for this thread alone, while its places are read before it is shown; its tables not kept. */
+    static final ThreadLocal<Map<String, byte[]>> READING = new ThreadLocal<>();
     /** Counts the route.zips used, so tables read from them are read again. */
     static volatile int generation;
 
@@ -76,7 +78,7 @@ final class RouteFiles {
 
     /** A table by its resource path ("/com/hdmapreforged/route/links.tsv"); null when there is none. */
     static InputStream open(String resource) {
-        var given = files;
+        var given = READING.get() != null ? READING.get() : files;
         if (given == null) {
             return RouteFiles.class.getResourceAsStream(resource);
         }
@@ -104,6 +106,9 @@ final class RouteFiles {
         volatile T value;
 
         T get() {
+            if (READING.get() != null) {
+                return read.get();
+            }
             int now = generation;
             if (readAt != now) {
                 synchronized (this) {

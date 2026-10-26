@@ -10,7 +10,7 @@ import java.util.function.*;
  * PatchImplementation.SPIRIT_TREE); any other value (growing, diseased, dead, to check, weeds) is none. Kept per account
  * (RS profile key {@link #KEY}); a patch not visited since is not known, so not used.
  */
-final class PlantedSpiritTrees {
+final class Planted {
     static final String KEY = "plantedSpiritTrees";
     /** The patch state of a grown spirit tree one can travel by. */
     static final int GROWN = 20;

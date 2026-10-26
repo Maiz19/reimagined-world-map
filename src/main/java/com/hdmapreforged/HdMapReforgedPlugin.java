@@ -4,10 +4,10 @@ import static net.runelite.api.gameval.VarPlayerID.*;
 import static net.runelite.api.GameState.*;
 import static com.hdmapreforged.MapServer.*;
 import static javax.swing.SwingUtilities.*;
-import static com.hdmapreforged.HdMapReforgedConfig.*;
+import static com.hdmapreforged.MapConfig.*;
 
 import com.google.gson.*;
-import com.google.inject.*;
+import com.google.inject.Provides;
 import java.awt.event.*;
 import java.io.*;
 import java.util.*;
@@ -16,8 +16,6 @@ import java.util.concurrent.atomic.*;
 import java.util.function.*;
 import java.util.stream.*;
 import javax.inject.*;
-import javax.inject.Inject;
-import javax.swing.*;
 import javax.swing.Timer;
 import lombok.extern.slf4j.*;
 import net.runelite.api.*;
@@ -75,7 +73,7 @@ public class HdMapReforgedPlugin extends Plugin {
     SpriteManager spriteManager;
 
     @Inject
-    HdMapReforgedConfig config;
+    MapConfig config;
 
     @Inject
     KeyManager keyManager;
@@ -86,7 +84,9 @@ public class HdMapReforgedPlugin extends Plugin {
     @Inject
     PartyMap party;
 
+    /** A fresh one each start: nothing of a run before carries over. */
     @Inject
+    Provider<RouteFeature> routes;
     RouteFeature route;
 
     ExecutorService io;
@@ -115,8 +115,8 @@ public class HdMapReforgedPlugin extends Plugin {
     volatile boolean loggedOut = true;
     MapServer server;
     MapScreen screen, fullScreen;
-    FullMapWindow fullMap;
-    MapIconLayer[] gameIcons = new MapIconLayer[0];
+    BigWindow fullMap;
+    IconLayer[] gameIcons = new IconLayer[0];
     GraveMarker[] graves = new GraveMarker[0];
     final HotkeyListener mapKey = new HotkeyListener(() -> config.openMapKey()) {
         public void keyPressed(KeyEvent e) {
@@ -174,13 +174,14 @@ public class HdMapReforgedPlugin extends Plugin {
     int ticks, lastUnlockTick = -UNLOCK_TICKS, lastQuestTick = -QUEST_TICKS;
 
     @Provides
-    HdMapReforgedConfig provideConfig(ConfigManager configManager) {
-        return configManager.getConfig(HdMapReforgedConfig.class);
+    MapConfig provideConfig(ConfigManager configManager) {
+        return configManager.getConfig(MapConfig.class);
     }
 
     /** When this throws, RuneLite calls shutDown, which undoes only what was made. */
     protected void startUp() throws Exception {
         int started = life.incrementAndGet();
+        route = routes.get();
         currentVersion = null;
         loadingVersion = null;
         failedMaps = 0;
@@ -207,7 +208,7 @@ public class HdMapReforgedPlugin extends Plugin {
         var itemNames = new ItemNames(clientThread, itemManager);
         screen = new MapScreen(tiles, config, this::worldInUse, itemNames, this::togglePopOut);
         fullScreen = new MapScreen(tiles, config, this::worldInUse, itemNames, () -> fullMap.close());
-        fullMap = new FullMapWindow(client, fullScreen, config.fullMapBounds(),
+        fullMap = new BigWindow(client, fullScreen, config.fullMapBounds(),
             bounds -> configManager.setConfiguration(GROUP, "fullMapBounds", bounds),
             key -> config.openMapKey().matches(key));
         keyManager.registerKeyListener(escape);
@@ -228,11 +229,11 @@ public class HdMapReforgedPlugin extends Plugin {
         route.itemNames = itemNames;
         route.start(screen, fullScreen);
         route.setSidebar(panel::showRoute, this::showOnMap);
-        panel.setTours(route.sidebarTours(panel::refreshTours));
-        gameIcons = new MapIconLayer[]{gameIconLayer(screen), gameIconLayer(fullScreen)};
+        panel.setTours(route.sidebarTours(panel::redoTours));
+        gameIcons = new IconLayer[]{gameIconLayer(screen), gameIconLayer(fullScreen)};
         graves = new GraveMarker[]{new GraveMarker(screen.view), new GraveMarker(fullScreen.view)};
         clientThread.invoke(this::checkGrave);
-        var pictures = new NpcPictures((id, done) -> {
+        var pictures = new NpcImages((id, done) -> {
             String version = tiles.version;
             serverCache.bytes("npcs", version, id + ".png", fetch -> server.npcPictureBytes(version, id, fetch),
                 bytes -> done.accept(decode(bytes)));
@@ -259,7 +260,7 @@ public class HdMapReforgedPlugin extends Plugin {
             }
         };
         PoiIcons.loaded = this::refreshLater;
-        whenGameLoaded(started, () -> GameIconSprites.load(client), PoiIcons::clearCache);
+        whenGameLoaded(started, () -> GameIcons.load(client), PoiIcons::clearCache);
     }
 
     void whenGameLoaded(int started, BooleanSupplier load, Runnable after) {
@@ -276,8 +277,8 @@ public class HdMapReforgedPlugin extends Plugin {
         });
     }
 
-    MapIconLayer gameIconLayer(MapScreen on) {
-        var layer = new MapIconLayer(on.view, config::iconSize);
+    IconLayer gameIconLayer(MapScreen on) {
+        var layer = new IconLayer(on.view, config::iconSize);
         on.view.addOverlay(layer);
         on.view.hitLayers.add(layer);
         on.view.badgeCover = layer::covers;
@@ -298,12 +299,8 @@ public class HdMapReforgedPlugin extends Plugin {
     protected void shutDown() {
         life.incrementAndGet();
         wantedVersion = null;
-        Timer waiting = retry;
-        retry = null;
-        if (waiting != null) {
-            waiting.stop();
-        }
-        GameIconSprites.clear();
+        retry(null);
+        GameIcons.clear();
         PoiIcons.clearCache();
         PoiIcons.load = (id, done) -> { };
         PoiIcons.loaded = () -> { };
@@ -345,7 +342,7 @@ public class HdMapReforgedPlugin extends Plugin {
         currentVersion = null;
         RouteFiles.clear();
         screen = null;
-        gameIcons = new MapIconLayer[0];
+        gameIcons = new IconLayer[0];
         graves = new GraveMarker[0];
         fullScreen = null;
         fullMap = null;
@@ -375,13 +372,12 @@ public class HdMapReforgedPlugin extends Plugin {
         var location = playerLocation(player);
         route.tick(location);
         var home = route.home();
-        // In a house the party sees its portal (the house's own place is a copy of the game's rooms).
-        var door = home == null || !HousePlan.contains(home.getX(), home.getY()) ? home : route.outside();
-        party.tick(home != null ? door : location, home != null, ticks);
-        var shown = home != null ? home : location;
+        var outside = route.outside();
         // On the house's plan, or in a box at its portal while that plan is not known (a friend's house).
         boolean boxed = home != null && !HousePlan.contains(home.getX(), home.getY());
-        var outside = route.outside();
+        // In a house the party sees its portal (the house's own place is a copy of the game's rooms).
+        party.tick(home == null ? location : boxed ? home : outside, home != null, ticks);
+        var shown = home != null ? home : location;
         if (shown != null && (!shown.equals(lastPlayer) || boxed != atHome)) {
             lastPlayer = shown;
             atHome = boxed;
@@ -475,7 +471,7 @@ public class HdMapReforgedPlugin extends Plugin {
      * later than it loads. On those two ticks the game gets typed keys, so a key pressed at once never opens the map
      * past the interface.
      */
-    volatile boolean interfaceTakesKeys;
+    volatile boolean takesKeys;
     volatile int interfacesChanged = 2;
     int clientTicks;
 
@@ -498,7 +494,7 @@ public class HdMapReforgedPlugin extends Plugin {
                 interfacesChanged--;
             }
             if (changed || ++clientTicks % 5 == 0) {
-                interfaceTakesKeys = modalTakesKeys();
+                takesKeys = modalTakesKeys();
             }
             var chat = client.getWidget(InterfaceID.Chatbox.UNIVERSE);
             var input = client.getWidget(InterfaceID.Chatbox.INPUT);
@@ -541,7 +537,7 @@ public class HdMapReforgedPlugin extends Plugin {
      */
     boolean typingInGame(KeyEvent e) {
         return e.getKeyChar() != KeyEvent.CHAR_UNDEFINED && !e.isControlDown() && !e.isAltDown() && !e.isMetaDown()
-            && (gameTakesText || interfaceTakesKeys || interfacesChanged > 0);
+            && (gameTakesText || takesKeys || interfacesChanged > 0);
     }
 
     void toggleFullMap() {
@@ -735,7 +731,7 @@ public class HdMapReforgedPlugin extends Plugin {
      * running, so the remembered one is not taken again (it may be the broken one). Data thread.
      */
     void resolveVersions(boolean now) {
-        var known = KnownVersion.read(home.joinSegment(KnownVersion.FILE));
+        var known = ServerCache.known(home.joinSegment(ServerCache.KNOWN));
         if (known != null && !now) {
             useVersion(known);
         }
@@ -796,7 +792,7 @@ public class HdMapReforgedPlugin extends Plugin {
         String file = WorldData.FILE + ".json";
         serverCache.bytes("data", version, file, fetch -> server.data(version, WorldData.FILE, fetch),
             bytes -> runData(() -> {
-                var read = bytes == null ? null : WorldData.parse(bytes);
+                var read = bytes == null ? null : WorldData.parse(gson, bytes);
                 if (started != life.get()) {
                     return;
                 }
@@ -851,36 +847,33 @@ public class HdMapReforgedPlugin extends Plugin {
                 loaded(version);
                 return;
             }
-            var list = files.get(0).join();
-            var regions = files.get(1).join();
-            var places = files.get(2).join();
-            var routeData = files.get(3).join();
-            var maps = list == null ? null : BaseMaps.parse(gson, MapServer.text(list));
+            // The map list, its region table, the places and the route tables.
+            var got = files.stream().map(CompletableFuture::join).toArray(byte[][]::new);
+            boolean all = Arrays.stream(got).allMatch(Objects::nonNull);
+            var maps = got[0] == null ? null : BaseMaps.parse(gson, MapServer.text(got[0]));
             Map<String, byte[]> routeFiles = null;
             MapData data = null;
-            if (maps != null && maps.byId(BaseMap.SURFACE) != null && regions != null && places != null
-                && routeData != null) {
-                var shown = RouteFiles.files;
+            if (all && maps != null && maps.byId(BaseMap.SURFACE) != null) {
                 try {
-                    var unzipped = RouteFiles.unzip(routeData);
-                    maps.regions = new RegionTable().read(MapServer.text(regions));
+                    var unzipped = RouteFiles.unzip(got[3]);
+                    // The planner's passages: a route.zip made before them would plan with no stairs or caves.
+                    Objects.requireNonNull(unzipped.get("passages.tsv"));
+                    maps.regions = Objects.requireNonNull(gson.fromJson(MapServer.text(got[1]), RegionTable.class));
                     maps.version = version;
-                    // Its icons are drawn where its world map moves put them: its tables for the read alone, the
-                    // version shown keeps its own until this one is shown.
-                    RouteFiles.use(unzipped);
+                    // Its icons are drawn where its world map moves put them: its tables for this thread's read alone,
+                    // the version shown keeps its own for the planner and the screens until this one is shown.
+                    RouteFiles.READING.set(unzipped);
                     try {
-                        data = MapData.read(gson, MapServer.text(places), maps, version);
+                        data = MapData.read(gson, MapServer.text(got[2]), maps, version);
                     } finally {
-                        RouteFiles.use(shown);
+                        RouteFiles.READING.remove();
                     }
                     routeFiles = unzipped;
                 } catch (IOException | RuntimeException e) {
-                    log.debug("Unusable files of map version {}", version, e);
                 }
             }
             if (data == null) {
-                log.debug("Map version {} incomplete; showing {}", version, currentVersion);
-                if (list != null && regions != null && places != null && routeData != null) {
+                if (all) {
                     // Complete but unusable: the kept copies are passed over once, or every retry would read them.
                     MAP_FILES.forEach(name -> serverCache.stale.add("maps/" + version + "/" + name));
                 }
@@ -935,12 +928,17 @@ public class HdMapReforgedPlugin extends Plugin {
             }
         }));
         timer.setRepeats(false);
+        retry(timer);
+        timer.start();
+    }
+
+    /** The waiting request becomes {@code next}; the one before is stopped. */
+    void retry(Timer next) {
         Timer previous = retry;
-        retry = timer;
+        retry = next;
         if (previous != null) {
             previous.stop();
         }
-        timer.start();
     }
 
     void switchVersion(String version, BaseMaps maps, MapData data, Map<String, byte[]> routeFiles, int started) {
@@ -980,7 +978,7 @@ public class HdMapReforgedPlugin extends Plugin {
         int generation = dataGeneration.incrementAndGet();
         currentVersion = version;
         failedMaps = 0;
-        KnownVersion.write(home.joinSegment(KnownVersion.FILE), version);
+        ServerCache.remember(home.joinSegment(ServerCache.KNOWN), version);
         serverCache.prune("maps", version);
         serverCache.prune("npcs", version);
         screens(s -> s.view.setMapUnavailable(false));
@@ -996,13 +994,13 @@ public class HdMapReforgedPlugin extends Plugin {
         clientThread.invokeLater(() -> unlocksDirty = true);
         var elements = data.icons.stream().filter(icon -> icon.element >= 0).map(icon -> icon.element)
             .collect(Collectors.toCollection(HashSet::new));
-        whenGameLoaded(started, () -> GameIconSprites.loadElements(client, elements), () -> { });
+        whenGameLoaded(started, () -> GameIcons.loadElements(client, elements), () -> { });
         invokeLater(() -> {
             if (screen != null && generation == dataGeneration.get()) {
                 // The game's icons with the data they belong to: a found shop is selected among them, a found passage
                 // shown by the game's icon for that way in.
                 for (var layer : gameIcons) {
-                    layer.setIcons(data.icons, data.hidden);
+                    layer.setIcons(data.icons);
                 }
                 screen.setData(maps, data);
                 fullScreen.setData(maps, data);

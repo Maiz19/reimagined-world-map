@@ -4,13 +4,10 @@ import static java.lang.Math.*;
 import static com.hdmapreforged.MapView.*;
 
 import java.text.*;
-import net.runelite.api.*;
 import java.awt.*;
 import java.awt.geom.*;
-import java.awt.image.*;
 import java.util.*;
 import java.util.List;
-import java.util.function.*;
 import lombok.*;
 import net.runelite.api.coords.*;
 
@@ -33,58 +30,39 @@ final class FriendsWidget implements Widget {
         final long id;
     }
 
-    interface Images {
-        BufferedImage item(int id, int quantity);
-
-        BufferedImage skill(int ordinal);
-
-        default BufferedImage sprite(int id) {
-            return null;
-        }
-    }
-
     static final Color OTHER_WORLD = new Color(255, 190, 120), FRIEND = new Color(150, 150, 160);
     static final Color WORLD = new Color(190, 190, 195);
     static final Font ROW = new Font(Font.SANS_SERIF, Font.PLAIN, 13);
     static final int WIDTH = 256, LEFT = 12, ROW_HEIGHT = 22;
     static final NumberFormat AMOUNT = NumberFormat.getIntegerInstance();
 
-    final Supplier<List<PartyMapMembers.Marker>> party;
-    final Supplier<List<Member>> group;
-    final BooleanSupplier inGroup;
-    final IntSupplier myWorld;
-    final Supplier<Boolean> enabled;
-    final Consumer<Row> focus;
-    final Runnable repaint;
-    /** Repaints while drops rise; made by the caller with the same repaint. */
-    final PartyMapOverlay.Ticker ticker;
+    final PartyMap party;
+    final MapView view;
+    /** A member's details, as the sidebar paints them too. */
+    final MemberPages pages;
+    /** Repaints while drops rise. */
+    final PartyOverlay.Ticker ticker = new PartyOverlay.Ticker(() -> FriendsWidget.this.view.repaint());
     boolean dropsMoving, open;
     long selected = -1;
     boolean folded;
-    /** A member's details, as the sidebar paints them too; null until the party map gives it. */
-    MemberPages pages;
-
 
     long selected() {
         return open ? selected : -1;
     }
-
-    BooleanSupplier canJoin = () -> false;
-    Runnable join = () -> { };
 
     void show(long id) {
         open = true;
         selected = id;
     }
 
-    static List<Row> rows(List<PartyMapMembers.Marker> party, List<Member> group) {
+    static List<Row> rows(List<PartyMembers.Marker> party, List<Member> group) {
         var rows = new ArrayList<Row>();
         // One row per member, not per name shown: two not named yet are two "Party member" rows, as on the map.
         var ids = new HashSet<Long>();
         for (var marker : party) {
             if (ids.add(marker.id)) {
                 rows.add(new Row(marker.name != null ? marker.name : "Party member", marker.world, marker.point,
-                    PartyMapOverlay.color(marker.id), marker.id));
+                    PartyOverlay.color(marker.id), marker.id));
             }
         }
         for (Member member : group) {
@@ -107,7 +85,7 @@ final class FriendsWidget implements Widget {
 
     List<Member> groupNow() {
         try {
-            return group.get();
+            return party.groupMembers();
         } catch (ConcurrentModificationException e) {
             // Changed on another thread while read; the next frame has them.
             return Collections.emptyList();
@@ -115,15 +93,15 @@ final class FriendsWidget implements Widget {
     }
 
     void paintWidget(Graphics2D g, int width, int bottom, Clicks clicks) {
-        if (!enabled.get()) {
+        if (!party.config.partyFriendsTab()) {
             // No list to close it with: no one stays chosen (their name shown) by a click on their marker.
             selected = -1;
             return;
         }
-        var rows = rows(party.get(), groupNow());
-        if (rows.isEmpty() && !inGroup.getAsBoolean()) {
-            if (canJoin.getAsBoolean()) {
-                clicks.add(tab(g, bottom, clicks, "Rejoin party"), join, "Join your last party again");
+        var rows = rows(party.members.markers(System.currentTimeMillis()), groupNow());
+        if (rows.isEmpty() && !party.party.isInParty()) {
+            if (party.lastParty() != null) {
+                clicks.add(tab(g, bottom, clicks, "Rejoin party"), () -> party.join(view), "Join your last party again");
             }
             return;
         }
@@ -132,14 +110,14 @@ final class FriendsWidget implements Widget {
         double tabTop = tab.getY();
         clicks.add(tab, () -> {
             open = !open;
-            repaint.run();
-        }, open ? "Close the list" : "Your party: click someone to see where they are");
+            view.repaint();
+        }, open ? "Close the list" : PoiType.t("t24"));
         if (!open) {
             return;
         }
         Row chosen = null;
         for (Row row : rows) {
-            chosen = row.id == selected && selected >= 0 && pages != null ? row : chosen;
+            chosen = row.id == selected && selected >= 0 ? row : chosen;
         }
         selected = chosen != null ? selected : -1;
         if (rows.isEmpty()) {
@@ -163,7 +141,7 @@ final class FriendsWidget implements Widget {
         box(g, list, CONTROL_FILL, CONTROL_EDGE);
         g.setFont(ROW);
         var metrics = g.getFontMetrics();
-        int mine = myWorld.getAsInt();
+        int mine = party.myWorld;
         for (int i = 0; i < shown.size(); i++) {
             Row row = shown.get(i);
             double top = listTop + 3 + i * ROW_HEIGHT;
@@ -174,10 +152,10 @@ final class FriendsWidget implements Widget {
             }
             clicks.add(area, () -> {
                 if (row.point != null) {
-                    focus.accept(row);
+                    party.follow(view, row.id);
                 }
                 selected = row.id;
-                repaint.run();
+                view.repaint();
             }, "Look at " + row.name + " and what they carry");
             double cy = top + ROW_HEIGHT / 2.0;
             dot(g, row.color, LEFT + 10, cy - 4);
@@ -216,7 +194,7 @@ final class FriendsWidget implements Widget {
                 g.setColor(CONTROL_HOVER);
                 g.fill(name);
             }
-            clicks.add(name, () -> focus.accept(row), "Follow " + row.name);
+            clicks.add(name, () -> party.follow(view, row.id), "Follow " + row.name);
         }
         dot(g, row.color, x0 + 12, top + 11);
         g.setColor(Color.WHITE);
@@ -225,7 +203,7 @@ final class FriendsWidget implements Widget {
             String world = "W" + row.world;
             g.setFont(ROW);
             var rowMetrics = g.getFontMetrics();
-            int mine = myWorld.getAsInt();
+            int mine = party.myWorld;
             boolean elsewhere = mine > 0 && row.world != mine;
             double right = x0 + panelW - (cramped ? 34 : 56);
             g.setColor(elsewhere ? OTHER_WORLD : WORLD);
@@ -233,21 +211,20 @@ final class FriendsWidget implements Widget {
         }
         titleButton(g, clicks, title, x0 + panelW - 26, top, "×", () -> {
             selected = -1;
-            repaint.run();
+            view.repaint();
         }, "Close");
         if (!cramped) {
             titleButton(g, clicks, title, x0 + panelW - 48, top, folded ? "+" : "\u2013", () -> {
                 folded = !folded;
-                repaint.run();
+                view.repaint();
             }, folded ? "Unfold" : "Fold up: the name and the orbs only");
         }
         if (compact) {
-            pages.paintStatus(g, pages.gear.apply(row.id), x0 + 8, top + 28, panelW - 16);
-            dropsMoving |= PartyMapOverlay.paintXp(g, pages.drops.apply(row.id), pages.images::skill,
-                x0 + panelW - 64, top + height - 8);
+            pages.paintStatus(g, party.members.gear(row.id), x0 + 8, top + 28, panelW - 16);
+            dropsMoving |= PartyOverlay.paintXp(g, party.xp(row.id), party::skill, x0 + panelW - 64, top + height - 8);
             return;
         }
-        dropsMoving |= pages.paint(g, row.id, x0 + 8, top + 30, panelW - 16, clicks, repaint);
+        dropsMoving |= pages.paint(g, row.id, x0 + 8, top + 30, panelW - 16, clicks, view::repaint);
     }
 
     static RoundRectangle2D tab(Graphics2D g, int bottom, Clicks clicks, String label) {

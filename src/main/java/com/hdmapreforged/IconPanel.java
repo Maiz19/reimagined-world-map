@@ -10,7 +10,7 @@ import lombok.*;
 /** The map's Icons panel: how icons show, and each kind of icon on or off by itself, under its group. Swing thread. */
 @RequiredArgsConstructor
 final class IconPanel {
-    final HdMapReforgedConfig config;
+    final MapConfig config;
     /** Builds the panel again where it shows. */
     final Runnable changed;
     /** Writes a setting (the plugin's ConfigManager). */
@@ -32,7 +32,7 @@ final class IconPanel {
         }
         for (var icon : data.icons) {
             add(icon.group, icon.toggle, () -> {
-                var sprite = GameIconSprites.element(icon.element);
+                var sprite = GameIcons.element(icon.element);
                 return sprite != null ? sprite : PoiIcons.image(icon.poi.type, 15);
             });
         }
@@ -55,14 +55,12 @@ final class IconPanel {
 
     JComponent section(int width) {
         var panel = SearchResults.column();
-        panel.add(check("Quest status", "A dot on quest start icons: green finished, yellow started, red not started",
+        panel.add(check("Quest status", PoiType.t("t26"),
             config.questStatus(), on -> set.accept("questStatus", on)));
         panel.add(check("Hide completed quests", "No quest start icons for finished quests",
             config.hideCompletedQuests(), on -> set.accept("hideCompletedQuests", on)));
-        panel.add(check("Mark what I can't use", "A red sign on shortcuts, moorings and resources whose level, quest "
-            + "or unlock you lack", config.markLocked(), on -> set.accept("markLocked", on)));
-        panel.add(check("Only what I can use", "Hide icons and routes whose level, quest or unlock you lack (needs "
-            + "you logged in)", config.onlyUsable(), on -> set.accept("onlyUsable", on)));
+        panel.add(check("Mark what I can't use", PoiType.t("t27"), config.markLocked(), on -> set.accept("markLocked", on)));
+        panel.add(check("Only what I can use", PoiType.t("t28"), config.onlyUsable(), on -> set.accept("onlyUsable", on)));
         var size = new JSpinner(new SpinnerNumberModel(Math.max(10, Math.min(40, config.iconSize())), 10, 40, 1));
         size.setMaximumSize(size.getPreferredSize());
         size.addChangeListener(e -> set.accept("iconSize", size.getValue()));

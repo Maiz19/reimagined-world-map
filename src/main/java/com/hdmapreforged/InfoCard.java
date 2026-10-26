@@ -23,7 +23,7 @@ final class InfoCard extends Fitted {
     final MapView map;
     final Supplier<WorldData> world;
     final ItemNames itemNames;
-    final HdMapReforgedConfig config;
+    final MapConfig config;
     Poi poi;
     WorldPoint nearestTo;
     List<Poi> nearest = new ArrayList<>();
@@ -34,7 +34,7 @@ final class InfoCard extends Fitted {
     @Setter
     Runnable onRebuilt = () -> { };
 
-    InfoCard(MapView map, Supplier<WorldData> world, ItemNames itemNames, HdMapReforgedConfig config) {
+    InfoCard(MapView map, Supplier<WorldData> world, ItemNames itemNames, MapConfig config) {
         // As JPanel(); a page down keeps 16 pixels of the page before.
         super(new FlowLayout(), 16);
         this.map = map;
@@ -65,7 +65,7 @@ final class InfoCard extends Fitted {
     @Setter
     Consumer<String> itemSearch;
     @Setter
-    NpcPictures npcPictures = new NpcPictures((id, done) -> done.accept(null));
+    NpcImages npcPictures = new NpcImages((id, done) -> done.accept(null));
 
     Consumer<Tour.Stop> stopAdder;
 
@@ -236,8 +236,7 @@ final class InfoCard extends Fitted {
                 add(routeStale ? routeHolder : fill(routeHolder, route));
             }
         } else if (poi == null) {
-            add(grey("Click an icon for details. Scroll to zoom, drag to move, double-click to zoom in. "
-                + "Right-click for the nearest teleports to a spot."));
+            add(grey(PoiType.t("t12")));
         } else {
             buildDetails();
         }
@@ -248,7 +247,7 @@ final class InfoCard extends Fitted {
 
     void buildNearest() {
         add(text("Nearest teleports to this spot", Color.WHITE, true));
-        add(grey("As the crow flies, from where each one lands. Walking routes may differ."));
+        add(grey(PoiType.t("t13")));
         if (nearest.isEmpty()) {
             add(grey("None on this map."));
         }
@@ -283,7 +282,7 @@ final class InfoCard extends Fitted {
         }
         if (stopAdder != null) {
             buttons.add(tip(button("+ Stop", () -> stopAdder.accept(Tour.Stop.place(
-                target.name, target.location))), "Add to your custom route (right-click the map, Custom routes...)"));
+                target.name, target.location))), PoiType.t("t14")));
         }
         buttons.add(button("Wiki", () -> LinkBrowser.browse(
             Wiki.searchUrl(poi.wikiQuery != null ? poi.wikiQuery : poi.name))));
@@ -392,7 +391,7 @@ final class InfoCard extends Fitted {
             return;
         }
         if (shop != null && shop.npc >= 0) {
-            JLabel keeper = pictureIcon(NpcPictures.LARGE);
+            JLabel keeper = pictureIcon(NpcImages.LARGE);
             npcPictures.show(shop.npc, keeper);
             add(pictureRow(keeper, grey(shop.name)));
         }
@@ -417,7 +416,7 @@ final class InfoCard extends Fitted {
             JPanel line = panel(new FlowLayout(FlowLayout.LEFT, 0, 0));
             line.add(tip(grey(dotted(ItemSources.stockText(ware.stock),
                 price >= 0 ? "GE " + gp(price) : null) + " · "),
-                "How many the shop keeps when no one has bought any, and the Grand Exchange price"));
+                PoiType.t("t15")));
             line.add(tip(link("Wiki", wiki), onWiki));
             add(createVerticalStrut(3));
             add(clickableRow(pictureRow(icon, name, line), open));

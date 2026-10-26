@@ -8,8 +8,7 @@ import net.runelite.api.worldmap.*;
 import net.runelite.client.util.*;
 
 /** The game's own world map icons, read from the client: drawn as the game's icons, and so our icons look like them. */
-final class GameIconSprites {
-    static final Map<PoiType, BufferedImage> SPRITES = new ConcurrentHashMap<>();
+final class GameIcons {
     static final Map<Integer, BufferedImage> ELEMENT_SPRITES = new ConcurrentHashMap<>();
 
     static boolean hasElements() {
@@ -67,33 +66,25 @@ final class GameIconSprites {
     }
 
     /** Fairy rings: the game draws its transport arrow for them; ours, as the game draws its icons. */
-    static final BufferedImage FAIRY_RING = ImageUtil.loadImageResource(GameIconSprites.class, "fairy_ring.png");
+    static final BufferedImage FAIRY_RING = ImageUtil.loadImageResource(GameIcons.class, "fairy_ring.png");
 
     /** Null when not loaded yet, or a type we draw ourselves. */
     static BufferedImage get(PoiType type) {
-        return type == PoiType.FAIRY_RING ? FAIRY_RING : SPRITES.get(type);
+        return type == PoiType.FAIRY_RING ? FAIRY_RING : element(type.element);
     }
 
     static void clear() {
-        SPRITES.clear();
         ELEMENT_SPRITES.clear();
     }
 
-    /** Client thread only; false while the game has not loaded its data yet. */
+    /** Client thread only: the types' icons ({@link #loadElements}); false while the game has not loaded its data yet. */
     static boolean load(Client client) {
+        var ids = new HashSet<Integer>();
         for (var type : PoiType.values()) {
-            if (type.element < 0) {
-                continue;
-            }
-            var config = config(client, type.element);
-            if (config == null && waiting(client)) {
-                return false;
-            }
-            BufferedImage image = config == null ? null : icon(config);
-            if (image != null) {
-                SPRITES.put(type, image);
+            if (type.element >= 0) {
+                ids.add(type.element);
             }
         }
-        return true;
+        return loadElements(client, ids);
     }
 }

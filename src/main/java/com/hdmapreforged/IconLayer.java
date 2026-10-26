@@ -14,7 +14,7 @@ import net.runelite.api.coords.*;
 import com.hdmapreforged.MapData.Icon;
 
 /**
- * Draws the game's own map icons (their sprites, {@link GameIconSprites}) where places.json puts them, hoverable and
+ * Draws the game's own map icons (their sprites, {@link GameIcons}) where places.json puts them, hoverable and
  * clickable; only the hovered or selected one gets a ring. Where one stands on an icon of ours for the same thing,
  * ours is not drawn ({@link #covers}); one for a way in stands for the planner's passage there too, ringed when that is
  * selected. They are at least 15 px, more where the map enlarges its most detailed tiles, centred 1.5 of the tiles'
@@ -22,7 +22,7 @@ import com.hdmapreforged.MapData.Icon;
  * above ground and where the game's map draws a place's floors flat (Keldagrim), upper floors only their own.
  */
 @RequiredArgsConstructor
-final class MapIconLayer implements MapView.Overlay, MapView.HitLayer {
+final class IconLayer implements MapView.Overlay, MapView.HitLayer {
     static final double ICON_PIXELS = 15;
 
     final MapView view;
@@ -90,8 +90,8 @@ final class MapIconLayer implements MapView.Overlay, MapView.HitLayer {
         return found;
     }
 
-    /** Swing thread only. {@code hidden}: our places the map does not draw, the planner's passages among them. */
-    void setIcons(List<Icon> icons, Collection<Poi> hidden) {
+    /** Swing thread only. */
+    void setIcons(List<Icon> icons) {
         var made = new IdentityHashMap<Poi, Icon>();
         var cover = new IdentityHashMap<Poi, Icon>();
         var grid = new HashMap<Integer, List<Icon>>();
@@ -104,9 +104,10 @@ final class MapIconLayer implements MapView.Overlay, MapView.HitLayer {
             int key = region(icon.drawn.getX(), icon.drawn.getY());
             grid.computeIfAbsent(key, k -> new ArrayList<>()).add(icon);
             poiIcons.computeIfAbsent(icon.poi, k -> new ArrayList<>(1)).add(icon);
-            if (icon.poi.type == FAIRY_RING && icon.element >= 0) {
-                // Ours, not the game's transport arrow: kept, as the game's is read only for elements not had.
-                GameIconSprites.ELEMENT_SPRITES.put(icon.element, GameIconSprites.FAIRY_RING);
+            if (icon.poi.type == FAIRY_RING && icon.kind != null && icon.kind.startsWith("Fairy ring")) {
+                // Ours, not the game's transport arrow: kept, as the game's is read only for elements not had. Only a
+                // ring's own key: two in Zanaris stand on the Transportation key that boats and the like share.
+                GameIcons.ELEMENT_SPRITES.put(icon.element, GameIcons.FAIRY_RING);
             }
             long spot = (long) icon.drawn.getX() << 32 | (long) icon.drawn.getY() << 2 | icon.drawn.getPlane();
             if (icon.element >= 0 && spots.add(spot)) {
@@ -116,11 +117,13 @@ final class MapIconLayer implements MapView.Overlay, MapView.HitLayer {
         // A passage of ours chosen (in the search, among a kind's places) rings the game's icon for that way in rather
         // than being drawn over it ("Mining Guild basement" drew the game's dungeon icon, an exclamation mark, on the
         // map link). A click on the game's icon still selects the game's own place, which knows where its link leads.
-        waysIn(icons, hidden).forEach((passage, icon) -> {
-            if (cover.putIfAbsent(passage, icon) == null) {
-                poiIcons.computeIfAbsent(passage, k -> new ArrayList<>(1)).add(icon);
+        for (var icon : icons) {
+            for (var poi : icon.covers) {
+                if (cover.putIfAbsent(poi, icon) == null) {
+                    poiIcons.computeIfAbsent(poi, k -> new ArrayList<>(1)).add(icon);
+                }
             }
-        });
+        }
         covering = cover;
         created = made;
         byRegion = grid;
@@ -130,45 +133,6 @@ final class MapIconLayer implements MapView.Overlay, MapView.HitLayer {
         scaledPixels = 0;
         view.searchExtras = new ArrayList<>(made.keySet());
         view.repaint();
-    }
-
-    /** How far from our passage the game's icon for that way in may stand: its dungeon icons stand a tile off. */
-    static final int WAY_IN_REACH = 1;
-
-    /**
-     * Of our passages the map does not draw (they serve routes and the search), those the game shows a way in or out
-     * for, each with that icon of the game's: on the passage's tile, else on one beside it.
-     */
-    static Map<Poi, Icon> waysIn(List<Icon> icons, Collection<Poi> hidden) {
-        var byTile = new HashMap<WorldPoint, Icon>();
-        for (var icon : icons) {
-            if (wayIn(icon)) {
-                byTile.putIfAbsent(icon.location, icon);
-            }
-        }
-        var found = new IdentityHashMap<Poi, Icon>();
-        for (var poi : hidden) {
-            if (poi.type != DUNGEON_ENTRANCE && poi.type != MAP_EXIT) {
-                continue;
-            }
-            var icon = byTile.get(poi.location);
-            for (int dx = -WAY_IN_REACH; icon == null && dx <= WAY_IN_REACH; dx++) {
-                for (int dy = -WAY_IN_REACH; icon == null && dy <= WAY_IN_REACH; dy++) {
-                    icon = byTile.get(poi.location.dx(dx).dy(dy));
-                }
-            }
-            if (icon != null) {
-                found.put(poi, icon);
-            }
-        }
-        return found;
-    }
-
-    /** One of the game's own icons for a way in or out: a map link or dungeon icon, also one that knows no target. */
-    static boolean wayIn(Icon icon) {
-        var type = icon.poi.type;
-        return !icon.own && (type == MAP_LINK || type == DUNGEON_ENTRANCE
-            || "Dungeon".equalsIgnoreCase(icon.kind) || "Map link".equalsIgnoreCase(icon.kind));
     }
 
     /** {@code last}: the hovered and selected, drawn after the rest so none lies over them. */
@@ -229,7 +193,7 @@ final class MapIconLayer implements MapView.Overlay, MapView.HitLayer {
      * 400 new images in one frame (55 ms on an accelerated pipeline, which uploads each).
      */
     BufferedImage sized(int element, int px, boolean locked) {
-        BufferedImage sprite = GameIconSprites.element(element);
+        BufferedImage sprite = GameIcons.element(element);
         if (sprite == null) {
             return null;
         }
@@ -320,44 +284,11 @@ final class MapIconLayer implements MapView.Overlay, MapView.HitLayer {
         if (!showsAny(projection)) {
             return poi -> false;
         }
-        coverBeside(view.pois);
         return poi -> {
             var icon = covering.get(poi);
-            return icon != null && !view.iconsOff.contains(icon.toggle) && GameIconSprites.element(icon.element) != null
+            return icon != null && !view.iconsOff.contains(icon.toggle) && GameIcons.element(icon.element) != null
                 && onView(icon, projection);
         };
-    }
-
-    List<Poi> coveredFor;
-
-    /**
-     * Ours beside the game's icon for the same thing, by its key's name in ours ("Shipwright Sornik" by the game's
-     * "Shipwright", a tile off at most): the game's stands for it, so ours is not drawn twice. Once per place list.
-     */
-    void coverBeside(List<Poi> pois) {
-        if (pois == coveredFor) {
-            return;
-        }
-        coveredFor = pois;
-        var byTile = new HashMap<WorldPoint, Icon>();
-        for (var icon : created.values()) {
-            if (icon.kind != null) {
-                byTile.putIfAbsent(icon.location, icon);
-            }
-        }
-        for (var poi : pois) {
-            String name = poi.name.toLowerCase(Locale.ROOT);
-            for (int dx = -1; dx <= 1 && !covering.containsKey(poi); dx++) {
-                for (int dy = -1; dy <= 1; dy++) {
-                    var icon = byTile.get(poi.location.dx(dx).dy(dy));
-                    if (icon != null && name.contains(icon.kind.toLowerCase(Locale.ROOT))) {
-                        covering.put(poi, icon);
-                        byPoi.computeIfAbsent(poi, k -> new ArrayList<>(1)).add(icon);
-                        break;
-                    }
-                }
-            }
-        }
     }
 
     static Point2D center(Icon icon, Projection projection) {
@@ -419,7 +350,7 @@ final class MapIconLayer implements MapView.Overlay, MapView.HitLayer {
         // The selected's last, on top. A passage's is the game's icon for it, which may be the one hovered.
         ringed.removeAll(ofSelected);
         ringed.addAll(ofSelected);
-        if (GameIconSprites.hasElements()) {
+        if (GameIcons.hasElements()) {
             paintLarger(g, projection, ringed);
         }
         // A pixel ring following the icon's outline, enlarged with it: yellow round the selected, white round the hovered.
@@ -432,7 +363,7 @@ final class MapIconLayer implements MapView.Overlay, MapView.HitLayer {
             if (c.getX() < -r || c.getY() < -r || c.getX() > projection.width() + r || c.getY() > projection.height() + r) {
                 continue;
             }
-            var sprite = GameIconSprites.element(icon.element);
+            var sprite = GameIcons.element(icon.element);
             if (sprite != null) {
                 PoiIcons.pixels(g, PoiIcons.outline(sprite, PoiIcons.RINGS[ofSelected.contains(icon) ? 1 : 2], times),
                     c.getX(), c.getY(), times);

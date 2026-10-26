@@ -55,10 +55,7 @@ final class Orbs {
         g.setFont(FontManager.getRunescapeSmallFont());
         var metrics = g.getFontMetrics();
         int tx = x + 15 - metrics.stringWidth(text) / 2, ty = y + 26;
-        g.setColor(Color.BLACK);
-        g.drawString(text, tx + 1, ty + 1);
-        g.setColor(value < 0 ? Color.LIGHT_GRAY : color(left));
-        g.drawString(text, tx, ty);
+        TextSprites.shadowed(g, text, tx, ty, value < 0 ? Color.LIGHT_GRAY : color(left));
     }
 
     /** The sprite, or a plain circle while it loads. */

@@ -1,11 +1,11 @@
 package com.hdmapreforged;
 
+import static com.hdmapreforged.PoiType.t;
 import static com.hdmapreforged.SearchResults.*;
 
 import java.awt.*;
 import java.awt.datatransfer.*;
 import java.awt.event.*;
-import java.awt.image.*;
 import java.io.*;
 import java.util.*;
 import java.util.List;
@@ -136,8 +136,8 @@ final class TourPanel {
             }
         })));
         JTextField name = new JTextField(current.name, 14);
-        name.setToolTipText("The route's name: type, then press Enter or click elsewhere");
-        FullMapWindow.typable(name);
+        name.setToolTipText(t("tourName"));
+        BigWindow.typable(name);
         Runnable rename = () -> {
             String typed = name.getText().trim();
             // On the routes as saved now (a stop added meanwhile stays); once renamed none has the old name, so Enter and
@@ -174,8 +174,7 @@ final class TourPanel {
         panel.add(Box.createVerticalStrut(8));
 
         if (current.stops.isEmpty()) {
-            panel.add(text("No stops yet. Right-click the map, Add to custom route, or + Stop in a card.",
-                ColorScheme.LIGHT_GRAY_COLOR, width));
+            panel.add(text(t("tourEmpty"), ColorScheme.LIGHT_GRAY_COLOR, width));
         }
         for (int i = 0; i < current.stops.size(); i++) {
             int at = i;
@@ -183,15 +182,14 @@ final class TourPanel {
             JPanel line = panel(new BorderLayout(4, 0));
             String label = (i + 1) + ". " + stop.name;
             line.add(current.repeats(i) ? tip(text(label, ColorScheme.MEDIUM_GRAY_COLOR, width - 114),
-                "The same as the stop before it: skipped, unless you move it elsewhere")
+                t("tourRepeat"))
                 : stop.isKind() ? text(label, Color.WHITE, width - 114)
                 : link(label, () -> focus.accept(stop.point), width - 114), BorderLayout.CENTER);
             JPanel moves = panel(new FlowLayout(FlowLayout.RIGHT, 2, 0));
             JButton lock = small("", () -> {
                 current.stops.set(at, stop.locked(!stop.locked));
                 save(tours, current.name);
-            }, stop.locked ? "Kept here when the order is worked out; click to let it move"
-                : "Keep this stop here when the order is worked out", true);
+            }, t(stop.locked ? "tourLocked" : "tourLock"), true);
             lock.setIcon(padlock(stop.locked));
             moves.add(lock);
             moves.add(small("↑", () -> move(tours, current, at, -1), "Earlier", i > 0));
@@ -221,7 +219,7 @@ final class TourPanel {
             go.add(Box.createHorizontalStrut(4));
             var loop = new JCheckBox("Loop", current.loop);
             loop.setOpaque(false);
-            loop.setToolTipText("After the last stop, start again at the first");
+            loop.setToolTipText(t("tourLoop"));
             loop.addActionListener(e -> {
                 tours.set(tours.indexOf(current), current.looping(loop.isSelected()));
                 save(tours, current.name);
@@ -235,10 +233,7 @@ final class TourPanel {
             withItems.setEnabled(!ordering);
             JButton fastest = button("Order fastest", () -> order(current, true));
             fastest.setEnabled(!ordering);
-            add(panel, 4, row(tip(withItems, "Put the stops in the quickest order from where you are, with the teleports, "
-                + "transport and items you have now; a home or minigame teleport is used once at most"),
-                tip(fastest, "The quickest order with every teleport and transport in the game, whatever you "
-                + "have; a home or minigame teleport is used once at most")));
+            add(panel, 4, row(tip(withItems, t("tourOrderItems")), tip(fastest, t("tourOrderAll"))));
         }
         JButton export = choice("Export", what -> {
             item(what, "This route", () -> copy(Tour.share(List.of(current)), "\"" + current.name + "\""));
@@ -247,19 +242,17 @@ final class TourPanel {
         export.setEnabled(!current.stops.isEmpty());
         JButton doImport = button("Import", () -> importRoutes(tours));
         doImport.setEnabled(!ordering);
-        add(panel, 4, row(tip(export, "Copy the route as text, to keep or to share"),
-            tip(doImport, "Add the routes on the clipboard, as Export copies them")));
+        add(panel, 4, row(tip(export, t("tourExport")), tip(doImport, t("tourImport"))));
 
         if (!current.avoid.isEmpty()) {
-            add(panel, 8, tip(text("Leaves out:", ColorScheme.LIGHT_GRAY_COLOR, width),
-                "Ways this route never takes; chosen with ⋯ at a step while the route runs"));
+            add(panel, 8, tip(text("Leaves out:", ColorScheme.LIGHT_GRAY_COLOR, width), t("tourLeavesOut")));
             for (String avoided : new ArrayList<>(current.avoid)) {
                 JPanel line = panel(new BorderLayout(4, 0));
                 line.add(text(Tour.describe(avoided), Color.WHITE, width - 40), BorderLayout.CENTER);
                 line.add(small("✕", () -> {
                     current.avoid.remove(avoided);
                     save(tours, current.name);
-                }, "Use it in this route again", true), BorderLayout.EAST);
+                }, t("tourUseAgain"), true), BorderLayout.EAST);
                 panel.add(capped(line));
             }
         }
@@ -279,7 +272,7 @@ final class TourPanel {
     }
 
     void copy(String text, String what) {
-        actions.toast(actions.copy(text) ? what + " copied to the clipboard" : "Could not copy: the clipboard is in use");
+        actions.toast(actions.copy(text) ? t("copied", what) : t("copyFailed"));
     }
 
     /** Adds the routes with stops on the clipboard, each under a name not taken; the last added is the one edited. */
@@ -287,7 +280,7 @@ final class TourPanel {
         var found = Tour.decode(actions.paste());
         found.removeIf(t -> t.stops.isEmpty());
         if (found.isEmpty()) {
-            actions.toast("Nothing to import: copy a route's text first (Export makes it)");
+            actions.toast(t("importNone"));
             return;
         }
         String last = null;
@@ -303,8 +296,8 @@ final class TourPanel {
         if (last != null) {
             save(tours, last);
         }
-        actions.toast(added < found.size() ? "Only " + Tour.MAX_TOURS + " routes can be kept: " + added + " of "
-            + found.size() + " imported" : added == 1 ? "\"" + last + "\" imported" : added + " routes imported");
+        actions.toast(added < found.size() ? t("importSome", Tour.MAX_TOURS, added, found.size())
+            : added == 1 ? t("imported", last) : t("importedMany", added));
     }
 
     /** The menu last opened under a button; a test reads it, as a menu shows only under a shown button. */
@@ -361,15 +354,11 @@ final class TourPanel {
 
     /** A padlock, shut (white) for a locked stop, open (grey) for one the order may move. */
     static Icon padlock(boolean shut) {
-        var image = new BufferedImage(10, 15, BufferedImage.TYPE_INT_ARGB);
-        var g = image.createGraphics();
-        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        g.setColor(shut ? Color.WHITE : ColorScheme.MEDIUM_GRAY_COLOR);
-        g.setStroke(new BasicStroke(1.5f));
-        // The shackle, lifted out of the body when open.
-        g.drawRoundRect(2, shut ? 3 : 0, 6, 9, 6, 6);
-        g.fillRoundRect(0, 8, 10, 7, 3, 3);
-        return new ImageIcon(image);
+        return new ImageIcon(PoiIcons.sprite(10, 15, 1, g -> {
+            g.setColor(shut ? Color.WHITE : ColorScheme.MEDIUM_GRAY_COLOR);
+            // The shackle, lifted out of the body when open.
+            PoiIcons.glyph(g, shut ? "LOCKED" : "UNLOCKED", 0, 0);
+        }));
     }
 
     static JLabel text(String text, Color color, int width) {

@@ -1,8 +1,8 @@
 # Badge glyphs for PoiIcons, one line per PoiType: TYPE<tab>ops separated by ";".
 # Coordinates are in units of the glyph radius s around the badge centre (x, y).
 # Path: m x y, l x y, q x1 y1 x2 y2, z; then P fills it or p outlines it.
-# R x y w h fill rect; O / o x y w h fill / draw oval; L x1 y1 x2 y2 line;
-# A / a x y w h start extent closure fill / draw arc; W x y w h arc rounded rect;
+# R / r x y w h fill / draw rect; O / o x y w h fill / draw oval; L x1 y1 x2 y2 line;
+# A / a x y w h start extent closure fill / draw arc; W / w x y w h arc fill / draw rounded rect;
 # c cx cy r filled circle (the teleport star and the fairy ring are worked out: cos and sin of their angles);
 # U x y scale moves the origin to (x, y) with that unit until the next P or p; C outline colour.
 TELEPORT	m 6.123233995736766E-17 -1.0; l 0.22627416997969524 -0.22627416997969518; l 1.0 0.0; l 0.22627416997969524 0.22627416997969518; l 6.123233995736766E-17 1.0; l -0.22627416997969518 0.22627416997969524; l -1.0 1.2246467991473532E-16; l -0.22627416997969527 -0.22627416997969518; z; P
@@ -39,9 +39,25 @@ QUEST_START	R -0.17 -0.9 0.34 1.15; O -0.2 0.45 0.4 0.4
 SHOP	O -0.7 -0.3 1.4 1.1; R -0.3 -0.8 0.6 0.6
 GRAVE	m -0.6 0.95; l -0.6 -0.3; q -0.6 -0.95 0 -0.95; q 0.6 -0.95 0.6 -0.3; l 0.6 0.95; z; P; C; R -0.09 -0.65 0.18 1.0; R -0.35 -0.4 0.7 0.18
 # Small interface icons, in pixels (s 1). g starts a float path, b x1 y1 x2 y2 x3 y3 a cubic;
-# K r g b sets the colour, w width round sets the stroke (round 1: round caps and joins).
+# K r g b sets the colour, s width round [dash gap] sets the stroke (round 1: round caps and joins, dashed if given).
 PIN	g; m 7 13.5; b 3 8.5 2.2 7 2.2 5.2; b 2.2 2.5 4.4 0.8 7 0.8; b 9.6 0.8 11.8 2.5 11.8 5.2; b 11.8 7 11 8.5 7 13.5; z; K 220 220 220; P; K 40 40 40; O 5.2 3.4 3.6 3.6
-FOLLOW	K 220 220 220; w 1.4 0; o 2.5 2.5 9 9; L 7 0.5 7 4; L 7 10 7 13.5; L 0.5 7 4 7; L 10 7 13.5 7; K 255 214 64; O 5.5 5.5 3 3
-NAVIGATION	m 1 2.5; l 5.666666666666667 4; l 5.666666666666667 13.5; l 1 12; z; K 111 168 90; P; m 5.666666666666667 4; l 10.333333333333334 2.5; l 10.333333333333334 12; l 5.666666666666667 13.5; z; K 79 140 68; P; m 10.333333333333334 2.5; l 15 4; l 15 13.5; l 10.333333333333334 12; z; K 111 168 90; P; K 63 111 216; w 1.3 1; L 3 10 7 7; L 7 7 10 9; K 224 64 64; O 10 4 4 4; R 11.4 7 1.2 3
-ALL	K 230 230 230; w 1.8; o 1 1 8 8; L 8 8 12 12
-ITEM	K 255 196 60; O 1.5 4.5 11 9; R 5 2 4 4; K 90 60 10; w 1; o 1.5 4.5 11 9; L 4.5 5 9.5 5
+FOLLOW	K 220 220 220; s 1.4 0; o 2.5 2.5 9 9; L 7 0.5 7 4; L 7 10 7 13.5; L 0.5 7 4 7; L 10 7 13.5 7; K 255 214 64; O 5.5 5.5 3 3
+NAVIGATION	m 1 2.5; l 5.666666666666667 4; l 5.666666666666667 13.5; l 1 12; z; K 111 168 90; P; m 5.666666666666667 4; l 10.333333333333334 2.5; l 10.333333333333334 12; l 5.666666666666667 13.5; z; K 79 140 68; P; m 10.333333333333334 2.5; l 15 4; l 15 13.5; l 10.333333333333334 12; z; K 111 168 90; P; K 63 111 216; s 1.3 1; L 3 10 7 7; L 7 7 10 9; K 224 64 64; O 10 4 4 4; R 11.4 7 1.2 3
+ALL	K 230 230 230; s 1.8; o 1 1 8 8; L 8 8 12 12
+ITEM	K 255 196 60; O 1.5 4.5 11 9; R 5 2 4 4; K 90 60 10; s 1; o 1.5 4.5 11 9; L 4.5 5 9.5 5
+# The map's controls and other small marks, in pixels round the point given, in the caller's colour unless set here.
+CLOSE	s 2.2 1; L -6 -6 6 6; L 6 -6 -6 6
+MAXIMISE	s 1.8; r -6 -6 12 12
+RESTORE	s 1.8; r -6 -3 9 9; L -3 -6 6 -6; L 6 -6 6 3
+PLUS	s 2.2 1; L -7 0 7 0; L 0 -7 0 7
+MINUS	s 2.2 1; L -7 0 7 0
+CENTRE	s 1.8; o -7 -7 14 14; L 0 -7 0 -11; L -7 0 -11 0; L 0 7 0 11; L 7 0 11 0; c 0 0 2.5
+FLOOR_UP	m 0 -6; l 7 4; l -7 4; z; P
+FLOOR_DOWN	m 0 6; l 7 -4; l -7 -4; z; P
+BACK	s 2 1; L -5 0 5 0; L -5 0 -1 -4; L -5 0 -1 4
+ROUTES	K 255 214 64; s 1.6 1 2.5 2; m 0 5; l 6 -5; l 12 3; p; K 255 255 255; c 0 5 2; c 6 -5 2; c 12 3 2
+LOCKED	s 1.5; w 2 3 6 9 6; W 0 8 10 7 3
+UNLOCKED	s 1.5; w 2 0 6 9 6; W 0 8 10 7 3
+GRIP	c -21 0 1.5; c -14 0 1.5; c -7 0 1.5; c 0 0 1.5; c 7 0 1.5; c 14 0 1.5; c 21 0 1.5
+GRIP_CORNER	O -2 -2 2 2; O -2 -6 2 2; O -6 -2 2 2; O -2 -10 2 2; O -6 -6 2 2; O -10 -2 2 2
+CLEAR	L -3 -3 3 3; L -3 3 3 -3

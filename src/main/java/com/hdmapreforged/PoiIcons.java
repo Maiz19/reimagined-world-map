@@ -1,6 +1,6 @@
 package com.hdmapreforged;
 
-import static com.hdmapreforged.MapIconLayer.*;
+import static com.hdmapreforged.IconLayer.*;
 import static java.awt.BasicStroke.*;
 import static java.awt.image.BufferedImage.*;
 import static java.awt.geom.AffineTransform.*;
@@ -11,7 +11,6 @@ import java.awt.*;
 import java.awt.geom.*;
 import java.awt.image.*;
 import java.io.*;
-import java.nio.charset.*;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
@@ -208,7 +207,7 @@ final class PoiIcons {
 
     /** The game's own map icon for the type if it has one, else our badge for it, pixel art of the same size. */
     static void paint(Graphics2D g, PoiType type, double cx, double cy, double size, Color ring, boolean locked) {
-        BufferedImage game = GameIconSprites.get(type), icon = game != null ? game : badge(type);
+        BufferedImage game = GameIcons.get(type), icon = game != null ? game : badge(type);
         paintGameIcon(g, locked ? locked(icon) : icon, cx, cy, size, ring);
     }
 
@@ -225,7 +224,7 @@ final class PoiIcons {
             g.setRenderingHint(KEY_STROKE_CONTROL, VALUE_STROKE_PURE);
             g.setColor(GLYPH);
             g.setStroke(new BasicStroke(1.2f, CAP_ROUND, JOIN_ROUND));
-            draw(g, GLYPHS.getOrDefault(t.name(), "O -0.4 -0.4 0.8 0.8"), size / 2.0, size / 2.0, size / 2.0 * 0.62);
+            draw(g, glyph(t.name(), PoiType.t("t11")), size / 2.0, size / 2.0, size / 2.0 * 0.62);
             g.dispose();
             return badge;
         });
@@ -261,8 +260,8 @@ final class PoiIcons {
 
     /** The game's round frame as its own icons have it (a bank's, painted grey within); our disc while none is loaded. */
     static BufferedImage frame() {
-        BufferedImage model = GameIconSprites.get(PoiType.BANK);
-        model = model != null ? model : GameIconSprites.get(PoiType.ANVIL);
+        BufferedImage model = GameIcons.get(PoiType.BANK);
+        model = model != null ? model : GameIcons.get(PoiType.ANVIL);
         if (model == null) {
             return disc((int) ICON_PIXELS, FRAME, Color.BLACK);
         }
@@ -387,7 +386,8 @@ final class PoiIcons {
                     s = w;
                     break;
                 case "R":
-                    g.fill(new Rectangle2D.Double(px, py, w, h));
+                case "r":
+                    shape(g, new Rectangle2D.Double(px, py, w, h), fill);
                     break;
                 case "O":
                 case "o":
@@ -401,7 +401,8 @@ final class PoiIcons {
                     shape(g, new Arc2D.Double(px, py, w, h, a[5], a[6], (int) a[7]), fill);
                     break;
                 case "W":
-                    g.fill(new RoundRectangle2D.Double(px, py, w, h, s * a[5], s * a[5]));
+                case "w":
+                    shape(g, new RoundRectangle2D.Double(px, py, w, h, s * a[5], s * a[5]), fill);
                     break;
                 case "c":
                     g.fill(PlayerMarker.circle(px, py, w));
@@ -412,9 +413,9 @@ final class PoiIcons {
                 case "K":
                     g.setColor(new Color((int) a[1], (int) a[2], (int) a[3]));
                     break;
-                case "w":
-                    g.setStroke(a[2] == 1 ? new BasicStroke((float) a[1], CAP_ROUND, JOIN_ROUND)
-                        : new BasicStroke((float) a[1]));
+                case "s":
+                    g.setStroke(a[2] == 1 ? new BasicStroke((float) a[1], CAP_ROUND, JOIN_ROUND, 1,
+                        a[3] > 0 ? new float[]{(float) a[3], (float) a[4]} : null, 0) : new BasicStroke((float) a[1]));
                     break;
                 default:
                     throw new IllegalArgumentException(op);
@@ -431,18 +432,12 @@ final class PoiIcons {
         }
     }
 
-    static final Map<String, String> GLYPHS = new HashMap<>();
+    static final Map<String, String[]> GLYPHS = PoiType.rows("poi_glyphs.txt");
 
-    static {
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-            PoiIcons.class.getResourceAsStream("poi_glyphs.txt"), StandardCharsets.UTF_8))) {
-            // A blank line or one without its tab is skipped, not a class that fails to load.
-            reader.lines().map(line -> line.split("\t", 2))
-                .filter(cells -> cells.length == 2 && !cells[0].startsWith("#"))
-                .forEach(cells -> GLYPHS.put(cells[0], cells[1]));
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+    /** A glyph's ops, or {@code otherwise}: a blank line or one without its tab is no glyph. */
+    static String glyph(String name, String otherwise) {
+        var cells = GLYPHS.get(name);
+        return cells == null || cells.length < 2 ? otherwise : cells[1];
     }
 
     /** A small image of an icon, for buttons and lists. */
@@ -454,6 +449,11 @@ final class PoiIcons {
     }
 
     static BufferedImage icon(int size, String name) {
-        return sprite(size, size, 1, g -> draw(g, GLYPHS.get(name), 0, 0, 1));
+        return sprite(size, size, 1, g -> glyph(g, name, 0, 0));
+    }
+
+    /** A glyph of the file's in pixels round (x, y). */
+    static void glyph(Graphics2D g, String name, double x, double y) {
+        draw(g, glyph(name, null), x, y, 1);
     }
 }

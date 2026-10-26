@@ -25,9 +25,9 @@ final class RouteRequest {
     final int nodeLimit;
     /**
      * Stay out of the Wilderness, unless the route starts or ends in it; when no way around it gets there, the route goes
-     * through it ({@link #throughWilderness()}).
+     * through it ({@link #viaWild()}).
      */
-    final boolean avoidWilderness;
+    final boolean noWild;
     /** The same with their boat, searched when this one (left without it) does not arrive; else null. */
     final RouteRequest boat;
     /** A way past a bank first, for what is kept there (setting); else null. */
@@ -39,9 +39,9 @@ final class RouteRequest {
     }
 
     RouteRequest(int start, int target, List<Edge> startEdges, List<Edge> edges, int sailingLevel, boolean running,
-        int nodeLimit, boolean avoidWilderness) {
+        int nodeLimit, boolean noWild) {
         this(start, target, Collections.unmodifiableList(startEdges), Collections.unmodifiableList(edges), sailingLevel,
-            running, nodeLimit, avoidWilderness, null, null);
+            running, nodeLimit, noWild, null, null);
     }
 
     /** The same ways between other ends, with no bank first. */
@@ -51,13 +51,13 @@ final class RouteRequest {
     }
 
     /** The same ways, through the Wilderness too: searched when staying out of it does not arrive. */
-    RouteRequest throughWilderness() {
-        return withAvoidWilderness(false).withBoat(boat == null ? null : boat.throughWilderness());
+    RouteRequest viaWild() {
+        return withNoWild(false).withBoat(boat == null ? null : boat.viaWild());
     }
 
     /** Whether a search may use the same ways as with {@code other} (jumps and sea): what it reaches differs by start only. */
     boolean sameWays(RouteRequest other) {
-        return sailingLevel == other.sailingLevel && avoidWilderness == other.avoidWilderness
+        return sailingLevel == other.sailingLevel && noWild == other.noWild
             && (boat == null) == (other.boat == null) && same(edges, other.edges)
             && same(startEdges, other.startEdges);
     }

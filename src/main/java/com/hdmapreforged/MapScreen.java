@@ -58,15 +58,14 @@ final class MapScreen extends JPanel implements Listener {
     /** Null until the window or the game-view map shows this screen. */
     Layout layout;
 
-    final HdMapReforgedConfig config;
+    final MapConfig config;
     final Supplier<WorldData> world;
     @RequiredArgsConstructor
     enum SearchMode {
-        ALL("Search places, monsters, items…", "Searching everything. Click to search places only"),
-        PLACES("Search places, patches, spots…", "Searching places, teleports, maps and every place of a kind (herb "
-            + "patches, shark fishing spots, banks). Click to search monsters and NPCs only"),
-        MONSTERS("Find a monster or NPC…", "Searching monsters and NPCs. Click to search items only"),
-        ITEMS("Find an item…", "Searching items in shops. Click to search everything");
+        ALL("Search places, monsters, items…", PoiType.t("dSearchAll")),
+        PLACES("Search places, patches, spots…", PoiType.t("t6")),
+        MONSTERS("Find a monster or NPC…", PoiType.t("t7")),
+        ITEMS("Find an item…", PoiType.t("dSearchItems"));
 
         final String hint, tooltip;
 
@@ -84,7 +83,7 @@ final class MapScreen extends JPanel implements Listener {
 
     final JLayeredPane layers = new JLayeredPane();
 
-    MapScreen(TileCache tiles, HdMapReforgedConfig config, Supplier<WorldData> world, ItemNames itemNames,
+    MapScreen(TileCache tiles, MapConfig config, Supplier<WorldData> world, ItemNames itemNames,
         Runnable togglePopOut) {
         super(new BorderLayout());
         this.config = config;
@@ -124,11 +123,11 @@ final class MapScreen extends JPanel implements Listener {
         npcs.setPlaces(this::place);
         cardScroll = scroll(card);
         for (Floating floating : new Floating[]{cardFloat, npcFloat, toursFloat, houseFloat, iconsFloat}) {
-            floating.addPropertyChangeListener("folded", e -> placeFloatingCard());
+            floating.addPropertyChangeListener("folded", e -> placeFloats());
         }
 
-        search.setToolTipText("Type and press Enter. The button next to it switches between places, monsters and items");
-        FullMapWindow.typable(search);
+        search.setToolTipText(PoiType.t("t8"));
+        BigWindow.typable(search);
         search.addActionListener(e -> chooseFirst());
         // The cross: what was found goes too, as with Clear.
         search.cleared = npcs::clear;
@@ -159,7 +158,7 @@ final class MapScreen extends JPanel implements Listener {
             showResults();
         }));
         updateSearchMode();
-        maps.setToolTipText("Map: the surface, a dungeon or another area");
+        maps.setToolTipText(PoiType.t("t9"));
         maps.addActionListener(e -> {
             var chosen = (BaseMap) maps.getSelectedItem();
             if (!syncing && chosen != null && chosen != view.map()) {
@@ -180,7 +179,7 @@ final class MapScreen extends JPanel implements Listener {
             }
         });
         plain(popOut, null, 4, e -> togglePopOut.run());
-        card.setOnRebuilt(this::placeFloatingCard);
+        card.setOnRebuilt(this::placeFloats);
         icons = new IconPanel(config, () -> {
             if (iconsShown) {
                 showIcons(true);
@@ -189,7 +188,7 @@ final class MapScreen extends JPanel implements Listener {
         view.iconsPanel = () -> showIcons(!iconsShown);
         layers.addComponentListener(new ComponentAdapter() {
             public void componentResized(ComponentEvent e) {
-                placeFloatingCard();
+                placeFloats();
             }
         });
         zoomIn = plain(new JButton("+"), "Zoom in", 6, e -> view.zoomBy(1));
@@ -217,16 +216,17 @@ final class MapScreen extends JPanel implements Listener {
             split = null;
         }
         view.setChrome(layout == Layout.FULL ? this::showMapPicker : null);
+        // The map in the layered pane also in a window: the Icons panel floats over it, not in the card.
+        layers.add(view, JLayeredPane.DEFAULT_LAYER);
         if (layout == Layout.FULL) {
             card.setTextWidth(FLOATING_TEXT);
-            layers.add(view, JLayeredPane.DEFAULT_LAYER);
             cardFloat.setContent(cardScroll);
             for (var part : new JComponent[]{cardFloat, search, searchMode}) {
                 layers.add(part, PALETTE_LAYER);
             }
             cardFloat.setVisible(view.selected() != null || card.route != null || card.extra != null);
             add(layers, BorderLayout.CENTER);
-            placeFloatingCard();
+            placeFloats();
         } else {
             cardScroll.setVisible(true);
             controls.removeAll();
@@ -242,11 +242,9 @@ final class MapScreen extends JPanel implements Listener {
                 controls.add(parts[i], c);
             }
             popOut.setText("Dock");
-            popOut.setToolTipText("Close this window; the sidebar's button opens it again");
+            popOut.setToolTipText(PoiType.t("t10"));
             maps.setPrototypeDisplayValue(new BaseMap(0, "Gielinor Surface", 0, 0, 0, 0, 0, 0, 0));
             add(controls, BorderLayout.NORTH);
-            // The map in the layered pane too: the Icons panel floats over it, not in the card.
-            layers.add(view, JLayeredPane.DEFAULT_LAYER);
             split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, layers, cardScroll);
             split.setBorder(createEmptyBorder());
             split.setContinuousLayout(true);
@@ -284,13 +282,13 @@ final class MapScreen extends JPanel implements Listener {
 
     void openTours() {
         if (tours != null && tours.isOpen() && layout != null) {
-            refreshTours();
+            redoTours();
         } else {
             toggleTours();
         }
     }
 
-    void refreshTours() {
+    void redoTours() {
         if (tours != null) {
             tours.refresh();
         }
@@ -299,7 +297,7 @@ final class MapScreen extends JPanel implements Listener {
     final JPanel toursPanel = new JPanel(new BorderLayout());
 
     /** A panel of its own over the game in {@link Layout#FULL}; elsewhere the card's extra section. */
-    void showFloatingElseSection(JPanel panel, Floating floating, int layer, IntFunction<JComponent> section) {
+    void showFloatOr(JPanel panel, Floating floating, int layer, IntFunction<JComponent> section) {
         if (layout == Layout.FULL) {
             showFloating(panel, floating, section, layer);
         } else {
@@ -310,7 +308,7 @@ final class MapScreen extends JPanel implements Listener {
     /** Over the game in their own panel beside the Routes button; elsewhere in the card. */
     void showTours(IntFunction<JComponent> section) {
         // Above the card and search results, which could otherwise steal its clicks on a narrow map.
-        showFloatingElseSection(toursPanel, toursFloat, PALETTE_LAYER + 1, section);
+        showFloatOr(toursPanel, toursFloat, PALETTE_LAYER + 1, section);
     }
 
     /** A final field: a lambda in a field initializer may not read it before the constructor sets it. */
@@ -343,7 +341,7 @@ final class MapScreen extends JPanel implements Listener {
 
     /** The "Your house" panel: over the game in a panel of its own, elsewhere in the card; null closes it. */
     void showHouse(IntFunction<JComponent> section) {
-        showFloatingElseSection(housePanel, houseFloat, PALETTE_LAYER + 1, section);
+        showFloatOr(housePanel, houseFloat, PALETTE_LAYER + 1, section);
     }
 
     /** The "Your house" panel built again, only where it shows. */
@@ -378,7 +376,7 @@ final class MapScreen extends JPanel implements Listener {
             layers.add(floating, layer);
         }
         floating.setVisible(section != null);
-        placeFloatingCard();
+        placeFloats();
         panel.revalidate();
         layers.repaint();
     }
@@ -391,7 +389,7 @@ final class MapScreen extends JPanel implements Listener {
         return scroll;
     }
 
-    void placeFloatingCard() {
+    void placeFloats() {
         int w = layers.getWidth(), h = layers.getHeight();
         view.setBounds(0, 0, w, h);
         if (iconsFloat.isVisible() && iconsFloat.getParent() == layers) {
@@ -481,7 +479,7 @@ final class MapScreen extends JPanel implements Listener {
     void showCard(boolean show) {
         if (layout == Layout.FULL) {
             cardFloat.setVisible(show);
-            placeFloatingCard();
+            placeFloats();
             layers.repaint();
         }
     }
@@ -544,7 +542,7 @@ final class MapScreen extends JPanel implements Listener {
         showCardAtTop(true);
     }
 
-    void setNpcPictures(NpcPictures npcPictures) {
+    void setNpcPictures(NpcImages npcPictures) {
         npcs.setNpcPictures(npcPictures);
         card.setNpcPictures(npcPictures);
     }
@@ -600,7 +598,7 @@ final class MapScreen extends JPanel implements Listener {
 
     void openMap(BaseMap map) {
         view.setFollowing(false);
-        view.rememberForBack(map);
+        view.remember(map);
         boolean mine = myMap() == map;
         view.showMap(map, mine ? shownOn(map, view.player()) : null, mine ? view.playerZoom() : fitZoom(map));
     }
@@ -613,8 +611,7 @@ final class MapScreen extends JPanel implements Listener {
 
     void updateSearchMode() {
         searchMode.setIcon(new ImageIcon(mode == MONSTERS ? dotIcon()
-            : mode == ITEMS ? icon(14, "ITEM") : mode == PLACES ? icon(14, "PIN")
-            : icon(14, "ALL")));
+            : icon(14, mode == ITEMS ? "ITEM" : mode == PLACES ? "PIN" : "ALL")));
         searchMode.setToolTipText(mode.tooltip);
         search.repaint();
     }

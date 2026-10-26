@@ -8,7 +8,6 @@ import java.util.*;
 import java.util.function.*;
 import java.util.regex.*;
 import lombok.*;
-import lombok.extern.slf4j.*;
 import okhttp3.*;
 
 /**
@@ -17,12 +16,11 @@ import okhttp3.*;
  * download sends only the address of what is wanted; nothing is ever sent about the player. The host is fixed; only in
  * RuneLite's developer mode does the system property {@code hdmap.server} point elsewhere.
  */
-@Slf4j
 @RequiredArgsConstructor
 final class MapServer {
     /** The live map server; its website shows the same map. */
     static final String HOST = "https://osrsmapreforged.online";
-    static final int MAX_BODY_BYTES = 8 * 1024 * 1024;
+    static final int MAX_BODY_BYTES = 16 * 1024 * 1024;
     static final Pattern SAFE_VERSION = Pattern.compile("[A-Za-z0-9]([A-Za-z0-9_.-]{0,38}[A-Za-z0-9_-])?");
     static volatile HttpUrl base = HttpUrl.get(HOST);
 
@@ -113,7 +111,6 @@ final class MapServer {
             return bytes == null ? null
                 : TileCache.readImage(bytes, (width, height) -> width <= MAX_PICTURE_SIDE && height <= MAX_PICTURE_SIDE);
         } catch (IOException | RuntimeException e) {
-            log.debug("Unusable picture", e);
             return null;
         }
     }
@@ -146,7 +143,7 @@ final class MapServer {
      * several maps claim, its places (what the map shows and the planner uses, {@link MapData#read}) and the planner's
      * tables ({@link com.hdmapreforged.RouteFiles}).
      */
-    static final List<String> MAP_FILES = List.of("maps.json", "regions.tsv", "places.json", "route.zip");
+    static final List<String> MAP_FILES = List.of("maps.json", "regions.json", "places.json", "route.zip");
 
     /** One of {@link #MAP_FILES} of a map version, as sent; null when it cannot be had. Calls back on any thread. */
     void mapFile(String version, String name, Consumer<byte[]> callback) {
@@ -164,7 +161,6 @@ final class MapServer {
         }
         http.newCall(new Request.Builder().url(url).build()).enqueue(new Callback() {
             public void onFailure(Call call, IOException e) {
-                log.debug("Map server request failed: {}", url, e);
                 callback.accept(fallback);
             }
 
@@ -175,7 +171,6 @@ final class MapServer {
                         value = parse.apply(TileCache.readBody(body, max));
                     }
                 } catch (IOException | RuntimeException e) {
-                    log.debug("Unusable answer from {}", url, e);
                 }
                 callback.accept(value == null ? fallback : value);
             }

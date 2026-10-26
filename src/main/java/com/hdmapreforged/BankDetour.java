@@ -132,7 +132,7 @@ final class BankDetour {
                     s.detail.substring(FROM_BANK.length()).split(", "))))) : s);
         }
         return new Route(FOUND, steps, toBank.cost + WITHDRAW + on.cost, request.target, on.end, false,
-            false, toBank.nodes + on.nodes).withThroughWilderness(toBank.throughWilderness || on.throughWilderness)
+            false, toBank.nodes + on.nodes).withViaWild(toBank.viaWild || on.viaWild)
             .withKeptOut(toBank.keptOut || on.keptOut);
     }
 

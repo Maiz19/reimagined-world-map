@@ -23,7 +23,7 @@ import net.runelite.api.*;
  * for a click from another program, which it hands on to the game; never moves or resizes the client window. Swing
  * thread only.
  */
-final class FullMapWindow implements MapView.WindowControls {
+final class BigWindow {
     static final Color GRIP_DOTS = new Color(255, 255, 255, 90);
     static final int EDGE = 8;
     /** Thicker than the sides: easy to take hold of. */
@@ -43,7 +43,6 @@ final class FullMapWindow implements MapView.WindowControls {
     Window watchedFrame;
     /** Fractions of the game view, or null for the default. */
     Rectangle2D relative;
-    @Getter
     boolean maximised;
     /** Focusable while another program is active: the next click decides where the keys go (see FirstClick). */
     boolean fromOutside;
@@ -63,15 +62,15 @@ final class FullMapWindow implements MapView.WindowControls {
     /** The client window going active or not: see followGame. */
     final WindowAdapter gameFocus = new WindowAdapter() {
         public void windowActivated(WindowEvent e) {
-            invokeLater(FullMapWindow.this::followGame);
+            invokeLater(BigWindow.this::followGame);
         }
 
         public void windowDeactivated(WindowEvent e) {
-            invokeLater(FullMapWindow.this::followGame);
+            invokeLater(BigWindow.this::followGame);
         }
     };
 
-    FullMapWindow(Client client, MapScreen screen, String savedBounds, Consumer<String> saveBounds,
+    BigWindow(Client client, MapScreen screen, String savedBounds, Consumer<String> saveBounds,
         Predicate<KeyEvent> isMapKey) {
         this.client = client;
         this.screen = screen;
@@ -86,7 +85,7 @@ final class FullMapWindow implements MapView.WindowControls {
         screen.setScreenLayout(MapScreen.Layout.FULL);
         screen.view.addMouseListener(new MouseAdapter() {
             public void mouseReleased(MouseEvent e) {
-                invokeLater(FullMapWindow.this::giveKeysBack);
+                invokeLater(BigWindow.this::giveKeysBack);
             }
         });
     }
@@ -148,7 +147,7 @@ final class FullMapWindow implements MapView.WindowControls {
         }
     }
 
-    public void close() {
+    void close() {
         if (window != null && window.isVisible()) {
             // No longer focusable, a focused window hands the keyboard back to the game's (setFocusableWindowState).
             window.setFocusableWindowState(false);
@@ -156,7 +155,7 @@ final class FullMapWindow implements MapView.WindowControls {
         }
     }
 
-    public void toggleMaximised() {
+    void toggleMaximised() {
         maximised = !maximised;
         save();
         place();
@@ -219,7 +218,7 @@ final class FullMapWindow implements MapView.WindowControls {
             if (e.getID() == MouseEvent.MOUSE_RELEASED && fromOutside) {
                 fromOutside = false;
                 if (!(e.getComponent() instanceof JTextComponent)) {
-                    invokeLater(FullMapWindow.this::giveKeysBack);
+                    invokeLater(BigWindow.this::giveKeysBack);
                 }
             }
         }
@@ -245,12 +244,7 @@ final class FullMapWindow implements MapView.WindowControls {
                 var g = (Graphics2D) graphics.create();
                 g.setRenderingHint(KEY_ANTIALIASING, VALUE_ANTIALIAS_ON);
                 g.setColor(GRIP_DOTS);
-                int right = getWidth() - 3, bottom = getHeight() - 3;
-                for (int row = 0; row < 3; row++) {
-                    for (int col = 0; col <= row; col++) {
-                        g.fillOval(right - col * 4 - 2, bottom - (row - col) * 4 - 2, 2, 2);
-                    }
-                }
+                PoiIcons.glyph(g, "GRIP_CORNER", getWidth() - 3, getHeight() - 3);
                 g.dispose();
             }
         };
@@ -401,7 +395,7 @@ final class FullMapWindow implements MapView.WindowControls {
             // The grip's height: 10 pixels.
             setPreferredSize(new Dimension(100, 10));
             setCursor(getPredefinedCursor(MOVE_CURSOR));
-            setToolTipText("Drag to move; double-click to fill the game view");
+            setToolTipText(PoiType.t("t23"));
             Drag mouse = new Drag() {
                 public void mousePressed(MouseEvent e) {
                     if (isLeftMouseButton(e)) {
@@ -444,10 +438,7 @@ final class FullMapWindow implements MapView.WindowControls {
             g.setColor(FRAME);
             g.fillRect(0, 0, getWidth(), getHeight());
             g.setColor(GRIP_DOTS);
-            double cx = getWidth() / 2.0, cy = getHeight() / 2.0;
-            for (int i = -3; i <= 3; i++) {
-                g.fill(new Ellipse2D.Double(cx + i * 7 - 1.5, cy - 1.5, 3, 3));
-            }
+            PoiIcons.glyph(g, "GRIP", getWidth() / 2.0, getHeight() / 2.0);
             g.dispose();
         }
     }

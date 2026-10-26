@@ -1,14 +1,12 @@
 package com.hdmapreforged;
 
-import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.function.*;
 
 /**
  * Which maps really show a 64×64 region where map bounds overlap (empty: checked, none), and where several share a
- * region, which draws each 8×8 zone: a map version's regions.tsv from the map server (built from its tiles by the test
- * sources' RegionResolver).
+ * region, which draws each 8×8 zone: a map version's regions.json from the map server as Gson binds it (built from its
+ * tiles by the test sources' RegionResolver; regions.tsv beside it is the released plugins'). Read only once made.
  */
 class RegionTable {
     static final int[] NONE = new int[0];
@@ -39,10 +37,6 @@ class RegionTable {
     /** Owner map ids, empty when none, or null when the table does not list the region. */
     int[] owners(int region) {
         return owners.get(region);
-    }
-
-    void put(int region, int[] ids) {
-        owners.put(region, ids);
     }
 
     /**
@@ -99,118 +93,5 @@ class RegionTable {
     /** A tile and floor as one number (as the route data packs them). */
     static int tileKey(int x, int y, int floor) {
         return floor << 28 | x << 14 | y;
-    }
-
-    void putTileFloor(int x, int y, int floor, int mapId, int drawnFloor) {
-        tileFloors.put(tileKey(x, y, floor), (mapId + 2) << 2 | drawnFloor);
-    }
-
-    void putFloor(int region, int zone, int floor, int mapId, int drawnFloor) {
-        floors.computeIfAbsent(region, r -> new int[ZONES * ZONES * 4])[zone * 4 + floor] = (mapId + 2) << 2 | drawnFloor;
-    }
-
-    /**
-     * Lines of region id, tab, comma-separated map ids, optionally tab and zones; floor lines ({@code F}, tab, region,
-     * tab, {@code zone.floor=map/floor} comma-separated) and tile floor lines ({@code T}, tab, region, tab,
-     * {@code x.y.floor=map/floor} comma-separated, x and y within the region), which tables before them did not have (a
-     * reader that cannot read a line skips it); bad lines are skipped.
-     */
-    RegionTable read(Reader tsv) throws IOException {
-        BufferedReader reader = new BufferedReader(tsv);
-        String line;
-        while ((line = reader.readLine()) != null) {
-            if (line.startsWith("#") || line.trim().isEmpty()) {
-                continue;
-            }
-            try {
-                if (line.startsWith(FLOOR_LINE)) {
-                    readFloors(line);
-                    continue;
-                }
-                if (line.startsWith(TILE_FLOOR_LINE)) {
-                    readTileFloors(line);
-                    continue;
-                }
-                readLine(line);
-            } catch (RuntimeException e) {
-                // Skipped: the maps' bounds decide there.
-            }
-        }
-        return this;
-    }
-
-    void readLine(String line) {
-        var cells = line.split("\t", -1);
-        var ids = NONE;
-        if (cells.length > 1 && !cells[1].trim().isEmpty()) {
-            ids = Arrays.stream(cells[1].split(",")).mapToInt(s -> Integer.parseInt(s.trim())).toArray();
-        }
-        int region = Integer.parseInt(cells[0].trim());
-        if (region < 0 || region > 0xFFFF) {
-            return;
-        }
-        String zoned = cells.length > 2 ? cells[2].trim() : "";
-        if (zoned.length() == ZONES * ZONES && ids.length > 0 && zoned.chars().allMatch(c -> MASKS.indexOf(c) >= 0)) {
-            zones.put(region, zoned);
-        } else if (!Arrays.equals(owners.get(region), ids)) {
-            // A later table with other owners: its zones are not known.
-            zones.remove(region);
-        }
-        put(region, ids);
-    }
-
-    static boolean valid(int floor, int map, int drawn) {
-        return floor >= 0 && floor < 4 && map >= BaseMap.FULL && map < 1 << 20 && drawn >= 0 && drawn < 4;
-    }
-
-    static final String FLOOR_LINE = "F\t";
-    static final String TILE_FLOOR_LINE = "T\t";
-
-    /** {@code T <tab> region <tab> x.y.floor=map/floor,...} (x, y within the region); entries out of range are skipped. */
-    void readTileFloors(String line) {
-        readEntries(line, 5, (region, p) -> {
-            int x = p[0], y = p[1], floor = p[2], map = p[3], drawn = p[4];
-            if (x >= 0 && x < 64 && y >= 0 && y < 64 && valid(floor, map, drawn)) {
-                putTileFloor(((region >> 8) << 6) + x, ((region & 255) << 6) + y, floor, map, drawn);
-            }
-        });
-    }
-
-    /** {@code F <tab> region <tab> zone.floor=map/floor,...}; entries out of range are skipped. */
-    void readFloors(String line) {
-        readEntries(line, 4, (region, p) -> {
-            int zone = p[0], floor = p[1], map = p[2], drawn = p[3];
-            if (zone >= 0 && zone < ZONES * ZONES && valid(floor, map, drawn)) {
-                putFloor(region, zone, floor, map, drawn);
-            }
-        });
-    }
-
-    /**
-     * A {@code T} or {@code F} line's entries: {@code <tab> region <tab> a.b...=c/d,...}, each entry {@code fields}
-     * numbers, passed with the region to {@code use}. The whole line is skipped where the region is unreadable or
-     * {@code cells} too short; one bad or short entry skips only itself.
-     */
-    void readEntries(String line, int fields, BiConsumer<Integer, int[]> use) {
-        var cells = line.split("\t");
-        int region = Integer.parseInt(cells[1].trim());
-        if (region < 0 || region > 0xFFFF || cells.length < 3) {
-            return;
-        }
-        for (String entry : cells[2].split(",")) {
-            var parts = entry.trim().split("[.=/]");
-            if (parts.length != fields) {
-                continue;
-            }
-            try {
-                var p = new int[fields];
-                for (int i = 0; i < fields; i++) {
-                    p[i] = Integer.parseInt(parts[i]);
-                }
-                use.accept(region, p);
-            } catch (RuntimeException e) {
-                // That entry only.
-            }
-        }
     }
 }

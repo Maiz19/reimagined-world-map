@@ -28,18 +28,8 @@ final class RoutesButton implements Widget {
         // Three stops joined by a dashed line, then the word.
         int textWidth = metrics.stringWidth("Routes");
         double x = LEFT + (w - textWidth - 20) / 2.0, y = bottom - CONTROL / 2.0;
-        var path = new Path2D.Double();
-        path.moveTo(x, y + 5);
-        path.lineTo(x + 6, y - 5);
-        path.lineTo(x + 12, y + 3);
-        g.setColor(PlayerMarker.YELLOW);
-        g.setStroke(new BasicStroke(1.6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 1f, new float[]{2.5f, 2f}, 0));
-        g.draw(path);
-        g.setColor(Color.WHITE);
-        for (var p : new double[][]{{x, y + 5}, {x + 6, y - 5}, {x + 12, y + 3}}) {
-            g.fill(new Ellipse2D.Double(p[0] - 2, p[1] - 2, 4, 4));
-        }
+        PoiIcons.glyph(g, "ROUTES", x, y);
         text(g, "Routes", x + 20, middle(y, metrics));
-        clicks.add(button, toggle, "Custom routes: your own routes with several stops, to order, save and run");
+        clicks.add(button, toggle, PoiType.t("t29"));
     }
 }

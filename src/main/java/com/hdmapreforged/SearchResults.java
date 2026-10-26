@@ -27,7 +27,7 @@ import net.runelite.api.coords.*;
 import net.runelite.client.ui.*;
 import lombok.*;
 import net.runelite.client.util.*;
-import com.hdmapreforged.NpcSpawns.Group;
+import com.hdmapreforged.Spawns.Group;
 import com.hdmapreforged.WorldData.Drop;
 
 /** What a search found (a monster, an item's sources, a kind of place), marked on the map and listed. Swing thread. */
@@ -119,11 +119,15 @@ final class SearchResults implements MapView.Overlay, MapView.HitLayer {
         view.addOverlay(this);
         view.hitLayers.add(this);
         filter.setAlignmentX(LEFT_ALIGNMENT);
-        filter.setToolTipText("Only the monsters whose names hold the words typed");
-        FullMapWindow.typable(filter);
+        filter.setToolTipText(PoiType.t("dFilterTip"));
+        BigWindow.typable(filter);
         // Escape empties it; once empty, the key is the window's (closing the map over the game).
         HintField.bind(filter, KeyEvent.VK_ESCAPE, "empty", () -> filter.setText(""), () -> !filter.getText().isEmpty());
-        HintField.onEdit(filter, this::filtered);
+        // Typed in the filter: the rows that match show from the top; nothing else is built again.
+        HintField.onEdit(filter, () -> {
+            filterRows();
+            listed.scrollRectToVisible(new Rectangle(0, 0, 1, 1));
+        });
     }
 
     /**
@@ -135,12 +139,6 @@ final class SearchResults implements MapView.Overlay, MapView.HitLayer {
     JPanel listed = column();
     /** A Dropped by row's monster, kept on the row for the filter. */
     static final String NAMED = "monster";
-
-    /** Typed in the filter: the rows that match show from the top; nothing else is built again. */
-    void filtered() {
-        filterRows();
-        listed.scrollRectToVisible(new Rectangle(0, 0, 1, 1));
-    }
 
     /** Shows the rows whose monster's name holds the words typed, each with the space above it, else that none does. */
     void filterRows() {
@@ -178,7 +176,7 @@ final class SearchResults implements MapView.Overlay, MapView.HitLayer {
     @Setter
     Consumer<Tour.Stop> stopAdder;
     @Setter
-    NpcPictures npcPictures = new NpcPictures((id, done) -> done.accept(null));
+    NpcImages npcPictures = new NpcImages((id, done) -> done.accept(null));
     @Setter
     BiConsumer<Integer, JLabel> itemPictures = (id, label) -> { };
 
@@ -238,13 +236,13 @@ final class SearchResults implements MapView.Overlay, MapView.HitLayer {
     }
 
     /** A monster's places by name, nearest first, each with how many stand there at once. Pure. */
-    static Result monsterResult(NpcSpawns found, Function<WorldPoint, MapData.Place> places, WorldPoint player) {
+    static Result monsterResult(Spawns found, Function<WorldPoint, MapData.Place> places, WorldPoint player) {
         var groups = named(found.groups, places, "Elsewhere");
         Result shown = new Result(found.page, found.page, "In " + places(groups.size()) + ", marked with green arrows"
-            + (player != null ? ", nearest first" : "") + ". Click a place to see it; its card has the way there.",
+            + (player != null ? ", nearest first" : "") + PoiType.t("t2"),
             nearestFirst(groups, player), null);
         shown.picture = found.npc;
-        shown.drops = found.drops;
+        shown.drops = found.tables.isEmpty() ? emptyList() : found.tables.get(0).drops;
         shown.tables = found.tables;
         return shown;
     }
@@ -289,13 +287,13 @@ final class SearchResults implements MapView.Overlay, MapView.HitLayer {
     void findItem(String name) {
         var found = world.get().item(name);
         answer(found == null ? null : itemResult(found, this::placeOf, view.near()),
-            "Nothing known about \"" + name + "\": no shop, ground spawn or drop.", name, 0);
+            PoiType.t("dNothingKnown", name), name, 0);
     }
 
     void showKind(KindIndex.Kind kind, Function<WorldPoint, String> placeName) {
         var groups = kindGroups(kind, placeName, view.near());
         Result shown = new Result(kind.label, kind.page, places(groups.size()) + ", marked with green arrows" + (view.near() != null ? ", nearest first" : "") + ". Click one to go there.",
-            groups, kind.type == null ? "Skilling spots: RuneLite (BSD 2-Clause)" : null);
+            groups, kind.type == null ? PoiType.t("t3") : null);
         shown.kind = kind.label;
         show(shown);
     }
@@ -480,7 +478,7 @@ final class SearchResults implements MapView.Overlay, MapView.HitLayer {
             return;
         }
         view.setFollowing(false);
-        view.rememberForBack(map);
+        view.remember(map);
         // Where the map draws it: a place drawn elsewhere (Dagannoth Kings' lair) would otherwise land in a corner.
         view.showMap(map, MapView.shownOn(map, standing(group.center(), view.ground())), max(view.targetZoom(), 2));
         view.select(iconOf(group, map));
@@ -666,7 +664,7 @@ final class SearchResults implements MapView.Overlay, MapView.HitLayer {
         }
         var title = heading(result.title, width - 70);
         if (result.picture >= 0) {
-            header.add(pictureRow(pictureLabel(result.picture, NpcPictures.LARGE), title));
+            header.add(pictureRow(pictureLabel(result.picture, NpcImages.LARGE), title));
         } else if (result.item >= 0) {
             JLabel icon = pictureIcon(PICTURE);
             itemPictures.accept(result.item, icon);
@@ -1114,14 +1112,14 @@ final class SearchResults implements MapView.Overlay, MapView.HitLayer {
         if (result != null && result.kind != null && stopAdder != null) {
             String kind = result.kind;
             buttons.add(tip(button("+ Stop", () -> stopAdder.accept(Tour.Stop.kind(kind))),
-                "Add \"the nearest of these\" to your custom route"));
+                PoiType.t("t4")));
         }
         var closest = closest();
         if (closest != null && fastest != null) {
             var places = new ArrayList<WorldPoint>();
             result.groups.stream().filter(group -> !undrawn(group)).forEach(group -> places.addAll(group.points));
             buttons.add(tip(button("Fastest", () -> fastest.accept(places)),
-                "Show the place you get to soonest, with your teleports and transport"));
+                PoiType.t("t5")));
         } else if (closest != null) {
             buttons.add(tip(button("Closest to me", () -> look(closest)), "Go to the place nearest to you"));
         }

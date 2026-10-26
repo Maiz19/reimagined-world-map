@@ -22,11 +22,10 @@ final class FairyRingLog {
 
     final RouteFeature routes;
     boolean open;
-    /** The code scrolled to since the log opened, and the frames it is still held there. */
+    /** The code scrolled to since the log opened, the scroll set for it, and whether it is still held (not the user's). */
     String scrolledTo;
-    int holding;
-    /** Frames the scroll is held after opening (the game puts back its own while it fills the list), then the user's. */
-    static final int HOLD_FRAMES = 30;
+    int scrolledY;
+    boolean holding;
 
     /** The codes of the route's first fairy ring step, in the order dialled; empty without one. */
     static List<String> codes(Route route) {
@@ -58,9 +57,10 @@ final class FairyRingLog {
     }
 
     /**
-     * Every frame while the log is open, as Shortest Path does: the game draws its list again (on opening, searching,
-     * sorting) with its own colours. The scroll is held on the code only for {@link #HOLD_FRAMES} after the log opened or
-     * the code changed, as the game puts back the scroll it keeps itself; then the user scrolls it.
+     * Every frame while the log is open, as Shortest Path does: the game draws its list again (on opening, by its search
+     * box's timer, on searching and sorting) with its own colours, and puts back the scroll it keeps itself (the top,
+     * or where the user scrolled). So the scroll goes to the code again each time the list was drawn anew, until the user
+     * scrolls; again for another code or when the log opens again.
      */
     @Subscribe
     public void onPostClientTick(PostClientTick event) {
@@ -73,22 +73,27 @@ final class FairyRingLog {
         // Favourites' codes in green too; the list scrolls to the first code's row.
         Widget faves = client.getWidget(InterfaceID.FairyringsLog.FAVES);
         mark(faves == null ? null : faves.getStaticChildren(), codes);
-        Widget first = mark(contents == null ? null : contents.getDynamicChildren(), codes);
+        Widget[] rows = contents == null ? null : contents.getDynamicChildren();
+        // None green: drawn anew since the last frame, with the game's scroll.
+        boolean drawn = rows == null || Arrays.stream(rows).noneMatch(row -> row != null && row.getTextColor() == GREEN);
+        Widget first = mark(rows, codes);
         if (first == null) {
             return;
         }
         if (!codes.get(0).equals(scrolledTo)) {
             scrolledTo = codes.get(0);
-            holding = HOLD_FRAMES;
+            holding = drawn = true;
+        } else if (!drawn && contents.getScrollY() != scrolledY) {
+            holding = false; // the user's own scroll
         }
-        if (holding <= 0) {
+        if (!holding || !drawn) {
             return;
         }
-        holding--;
-        int scroll = Math.max(0, Math.min(first.getRelativeY(), contents.getScrollHeight() - contents.getHeight()));
         // No client script for the scrollbar's thumb: reviewers flag running them.
-        contents.setScrollY(scroll);
+        contents.setScrollY(Math.max(0, Math.min(first.getRelativeY(), contents.getScrollHeight() - contents.getHeight())));
         contents.revalidateScroll();
+        // As the client keeps it: a scroll it changed after is the user's.
+        scrolledY = contents.getScrollY();
     }
 
     /** Colours the codes among these widgets green; the first code's widget, or null. */

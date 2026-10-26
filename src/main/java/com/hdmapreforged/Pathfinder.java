@@ -28,10 +28,8 @@ final class Pathfinder {
     /** Half ticks. */
     static final int RUN = 1, WALK = 2, DOOR = 2;
     /** Vines, jungle or a web: needs a tool, so walking around is better. */
-    static final int OBSTACLE = 10, SAIL = CELL, STAIRS = 5;
-    /** Through a solid object found by shape: only when no known way is much shorter. */
-    static final int THROUGH = 30;
-    static final String UNKNOWN_NEEDS = "May need a quest, level or item the map does not know";
+    static final int OBSTACLE = 10, SAIL = CELL;
+    static final String UNKNOWN_NEEDS = PoiType.t("dUnknownNeeds");
     static final int SNAP_RADIUS = 12, LONG_JUMP = 24, BLOCK = 8;
     static final int[] DX = {1, -1, 0, 0, 1, 1, -1, -1};
     static final int[] DY = {0, 0, 1, -1, 1, -1, 1, -1};
@@ -63,56 +61,30 @@ final class Pathfinder {
         this.map = map;
         this.sea = sea;
         var edges = new ArrayList<Edge>();
-        // Passages only from: the game's map links, hand links citing a source,
-        // and cache passages: within SAME_SPOT, or far ones (into a dungeon, 6400 tiles north) that the collision tool
-        // paired with a way back at the other end, unless a map link of the game's starts there and leads elsewhere.
-        var mapLinks = links(map, DIR + "map_link_passages.tsv");
-        var handLinks = links(map, DIR + "links.tsv");
-        var gameLinks = gameLinkStarts();
-        for (Transition t : map.transitions) {
-            var kind = z(t.to) != t.plane && abs(y(t.to) - t.y) < 1000 ? Edge.Kind.STAIRS
-                : Edge.Kind.ENTRANCE;
-            String name = t.action + (t.name.isEmpty() ? "" : " " + t.name);
-            var fee = Fees.at(t.x, t.y, t.plane);
-            String detail = fee != null ? "Needs: " + fee.text
-                : t.through ? UNKNOWN_NEEDS : null;
-            int cost = STAIRS + (fee == null ? 0 : fee.cost) + (t.through ? THROUGH : 0);
-            for (int origin : t.origins) {
-                // A game map link starts within 4 tiles: where it leads is the game's word, not the cache's pairing.
-                if (sameSpot(origin, t.to) || confirmed(mapLinks, origin, t.to) || confirmed(handLinks, origin, t.to)
-                    || gameLinks.stream().noneMatch(s -> s[2] == z(origin) && abs(s[0] - x(origin)) <= 4
-                        && abs(s[1] - y(origin)) <= 4)) {
-                    edges.add(new Edge(origin, t.to, kind, name, detail, cost));
+        var atShortcuts = new ArrayList<ShortcutPassage>();
+        var ways = ShortcutPassage.allWays();
+        // The map version's passages as its build worked them out (BuildPassages), in its order, which breaks ties in
+        // the search (a route.zip made before passages.tsv is not used: HdMapReforgedPlugin.useVersion). The Agility shortcuts among them are added only
+        // to requests whose player meets one of their ways.
+        table(DIR + "passages.tsv", c -> {
+            int at = parse(c[1]), to = parse(c[2]);
+            if (c[0].equals("S")) {
+                shortcutStarts.put(at, 0);
+            } else if (c[0].equals("C")) {
+                closedSteps.put(at, Integer.parseInt(c[2]));
+            } else if (c[0].equals("P") && min(at, to) >= 0) {
+                var e = new Edge(at, to, Edge.Kind.valueOf(c[3]), c[7], c[6].equals("?") ? UNKNOWN_NEEDS
+                    : c[6].isEmpty() ? null : c[6], Integer.parseInt(c[4]));
+                if (c[5].isEmpty()) {
+                    edges.add(e);
+                } else {
+                    atShortcuts.add(new ShortcutPassage(e, Arrays.stream(ints(c[5])).mapToObj(ways::get)
+                        .collect(toUnmodifiableList())));
                 }
             }
-        }
-        edges.addAll(mapLinks);
-        edges.addAll(handLinks);
-        edges.addAll(fromOpenGround(map, edges));
-        var oneWay = OneWay.load();
-        edges.removeIf(e -> oneWay.against(e.from, e.to));
-        // A passage a gates.tsv row covers (a quest-locked city gate the game's map links have as open) is never free:
-        // RouteSource offers the row's own edge to players who meet its needs.
-        var gated = new ArrayList<int[]>();
-        for (var parts : rows(DIR + "gates.tsv")) {
-            int a = parts.length < 3 ? -1 : parse(parts[1]), b = a < 0 ? -1 : parse(parts[2]);
-            if (b >= 0) {
-                gated.add(new int[]{a, b});
-                close(a, b);
-            }
-        }
-        edges.removeIf(e -> gated.stream().anyMatch(g -> covers(g, e)));
-        // Passages that are Agility shortcuts (shortcuts.tsv): added only to requests whose player meets the shortcut.
-        var atShortcuts = new ArrayList<ShortcutPassage>();
-        edges.removeIf(e -> {
-            // Its needs are checked per request: no toll for needs the map would not know.
-            var at = ShortcutPassage.of(UNKNOWN_NEEDS.equals(e.detail)
-                ? new Edge(e.from, e.to, e.kind, e.name, null, e.cost - THROUGH) : e);
-            return at != null && atShortcuts.add(at);
+            return null;
         });
         shortcutPassages = Collections.unmodifiableList(atShortcuts);
-        ShortcutPassage.known().forEach(s -> shortcutStarts.put(s.origin, 0));
-        atShortcuts.forEach(s -> shortcutStarts.put(s.edge.from, 0));
         passages = Collections.unmodifiableList(edges);
         passagesByOrigin = EdgeIndex.of(edges, 0, false);
         passagesByDestination = EdgeIndex.of(edges, 0, true);
@@ -143,19 +115,7 @@ final class Pathfinder {
         }).stream().collect(toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a));
     }
 
-    /**
-     * Whether a gates.tsv row (from, to) covers a passage: one going its own way, from near its start to near its end. Not
-     * the way back: where a gate's two ends lie within 2 tiles of each other (Lletya's trees, Villa Lucens' entryway), the
-     * passage out is near both ends too, and was taken for the gate's own (a row stands for one direction, as its closed
-     * step does). Within a gate row's reach: the same floor, two tiles.
-     */
-    static boolean covers(int[] gate, Edge e) {
-        return near(e.from, gate[0], 2) && near(e.to, gate[1], 2)
-            && distance(e.from, gate[0]) <= distance(e.from, gate[1])
-            && distance(e.to, gate[1]) <= distance(e.to, gate[0]);
-    }
-
-    /** Whether the step from {@code node} by (dx, dy) is one {@link #close} shut. */
+    /** Whether the step from {@code node} by (dx, dy) is one a gates.tsv row closes. */
     boolean closed(int node, int dx, int dy) {
         int closed = closedSteps.get(node);
         for (int d = 0; closed != MISSING && d < DX.length; d++) {
@@ -166,63 +126,17 @@ final class Pathfinder {
         return false;
     }
 
-    /** A gates.tsv row between neighbouring tiles: that step is not walked, only taken by the row's edge. */
-    void close(int from, int to) {
-        if (z(from) != z(to) || distance(from, to) != 1) {
-            return;
-        }
-        for (int d = 0; d < DX.length; d++) {
-            if (x(to) - x(from) == DX[d] && y(to) - y(from) == DY[d]) {
-                int known = closedSteps.get(from);
-                closedSteps.put(from, (known == MISSING ? 0 : known) | 1 << d);
-            }
-        }
-    }
-
-    static boolean sameSpot(int from, int to) {
-        return distance(from, to) <= SAME_SPOT;
-    }
-
-    /** A cache passage this near its start is the other side of an obstacle or the same spot on another floor. */
-    static final int SAME_SPOT = 10;
-
-    /** Where the game's own map links start (route/map_link_starts.tsv): x, y, plane. */
-    static List<int[]> gameLinkStarts() {
-        return table(DIR + "map_link_starts.tsv", parts -> {
-            int start = parse(parts[0]);
-            return start < 0 ? null : new int[]{x(start), y(start), z(start)};
-        });
-    }
-
-    /**
-     * A passage whose start is a tile shut in by walls (the snapped tile behind a cave mouth) is also taken from the
-     * open tiles right beside it, where one stands to use it in the game.
-     */
-    static List<Edge> fromOpenGround(CollisionMap map, List<Edge> edges) {
-        var open = new HashMap<Integer, Boolean>();
-        var extra = new ArrayList<Edge>();
-        for (Edge e : edges) {
-            if (e.from < 0 || isSea(e.from) || open.computeIfAbsent(e.from, n -> reaches(map, n, at -> false))) {
-                continue;
-            }
-            for (int d = 0; d < 8; d++) {
-                int x = x(e.from) + DX[d], y = y(e.from) + DY[d], next = pack(x, y, z(e.from));
-                if (map.walkable(x, y, z(e.from)) && open.computeIfAbsent(next, n -> reaches(map, n, at -> false))) {
-                    extra.add(e.withFrom(next));
-                }
-            }
-        }
-        return extra;
-    }
-
     /** Tiles a walk reaches out in the open, not shut in by walls. */
     static final int OPEN = 120;
 
-    /** Whether walking from a tile reaches {@link #OPEN} tiles, or one that {@code way} leads out of. */
-    static boolean reaches(CollisionMap map, int node, IntPredicate way) {
-        // Run for every passage at start: no boxing.
-        int[] queue = new int[OPEN];
-        var seen = new IntMap(2 * OPEN);
+    /**
+     * Whether walking from a tile reaches {@code limit} tiles ({@link #OPEN}: out in the open), or one that {@code way}
+     * leads out of; when not, {@code way} saw each tile walked to once.
+     */
+    static boolean reaches(CollisionMap map, int node, IntPredicate way, int limit) {
+        // Run for many tiles: no boxing.
+        int[] queue = new int[limit];
+        var seen = new IntMap(2 * limit);
         queue[0] = node;
         seen.put(node, 0);
         for (int head = 0, tail = 1; head < tail; head++) {
@@ -234,7 +148,7 @@ final class Pathfinder {
                 int next = pack(x(at) + DX[d], y(at) + DY[d], z(at));
                 if (map.canStep(x(at), y(at), z(at), DX[d], DY[d]) && seen.get(next) == MISSING) {
                     seen.put(next, 0);
-                    if (++tail >= OPEN) {
+                    if (++tail >= limit) {
                         return true;
                     }
                     queue[tail - 1] = next;
@@ -242,21 +156,6 @@ final class Pathfinder {
             }
         }
         return false;
-    }
-
-    static boolean confirmed(List<Edge> passages, int from, int to) {
-        return passages.stream().anyMatch(e -> near(e.from, from, 4) && near(e.to, to, 16));
-    }
-
-    static List<Edge> links(CollisionMap map, String resource) {
-        return table(resource, parts -> {
-            int a = parts.length < 3 ? -1 : parse(parts[0]), b = a < 0 ? -1 : parse(parts[1]);
-            int from = b < 0 ? -1 : map.nearestWalkable(x(a), y(a), z(a), 2);
-            int to = from < 0 ? -1 : map.nearestWalkable(x(b), y(b), z(b), 2);
-            // An optional fourth column: its cost in half ticks, where it takes longer than stairs.
-            int cost = parts.length > 3 && parts[3].trim().matches("\\d{1,4}") ? Integer.parseInt(parts[3].trim()) : STAIRS;
-            return to < 0 ? null : new Edge(from, to, Edge.Kind.ENTRANCE, parts[2].trim(), null, cost);
-        });
     }
 
     /** A bundled table's lines split at tabs, without {@code #} comments; what could be read. */
@@ -341,7 +240,7 @@ final class Pathfinder {
         }
         // No ground on this floor around the spot, but the very spot is ground on another floor (a dungeon's raised part
         // the map shows as floor 1, ours as floor 2: the Brimhaven Dungeon's at 2633 9491): that floor's spot.
-        if (map.nearestWalkable(x, y, z, 2) < 0) {
+        if (map.walkableNear(x, y, z, 2) < 0) {
             for (int dz = 1; dz < 4; dz++) {
                 for (int other : new int[]{z - dz, z + dz}) {
                     if (other >= 0 && other <= 3 && map.walkable(x, y, other) && !pocket(pack(x, y, other), out)) {
@@ -376,7 +275,7 @@ final class Pathfinder {
         for (int dz = 1; dz < 4; dz++) {
             for (int other : new int[]{z - dz, z + dz}) {
                 int near = other < 0 || other > 3 ? -1
-                    : open ? nearestOpen(x, y, other, radius, out) : map.nearestWalkable(x, y, other, radius);
+                    : open ? nearestOpen(x, y, other, radius, out) : map.walkableNear(x, y, other, radius);
                 if (near >= 0 && !(open && pocket(near, out))) {
                     return near;
                 }
@@ -407,7 +306,7 @@ final class Pathfinder {
 
     boolean pocket(int node, IntPredicate out) {
         return !reaches(map, node, at -> passagesByOrigin.get(at) != null || shortcutStarts.get(at) != MISSING
-            || out.test(at));
+            || out.test(at), OPEN);
     }
 
     /** Where a request's own jumps start (fairy rings, boats, a shortcut's icon): ways out of a pocket for its target. */
@@ -436,10 +335,10 @@ final class Pathfinder {
         // Not when it only stopped at a cost limit: a way around may cost more, and the Wilderness is no cheaper way.
         if (avoids(request) && route.keptOut && (route.outcome == NEAREST
             || route.outcome == NONE) && !route.limited && !cancelled.getAsBoolean()) {
-            Route through = walkOrSail(request.throughWilderness(), cancelled, costLimit);
+            Route through = walkOrSail(request.viaWild(), cancelled, costLimit);
             // Out of reach only if the search through it tried everything too; then its proof is the one kept (the one
             // kept out counts every Wilderness tile as out of reach, so a way in there would not be searched again).
-            return through.outcome == FOUND ? through.withThroughWilderness(true) : through.outcome == CANCELLED ? route
+            return through.outcome == FOUND ? through.withViaWild(true) : through.outcome == CANCELLED ? route
                 : through.exhausted ? route.withReached(through.reached) : route.withExhausted(false).withReached(null);
         }
         return route;
@@ -460,7 +359,7 @@ final class Pathfinder {
         if (near < 0) {
             return route;
         }
-        var ways = route.throughWilderness ? request.throughWilderness() : request;
+        var ways = route.viaWild ? request.viaWild() : request;
         Route there = walkOrSail(ways.between(request.start, near).withBank(request.bank), cancelled, costLimit);
         // Still out of reach itself: the proof stays, so it is not searched again from here.
         return there.outcome != FOUND ? route : there.near(route);
@@ -485,7 +384,7 @@ final class Pathfinder {
     /** Whether a search for this request stays out of the Wilderness: asked to, and it neither starts nor ends there. */
     boolean avoids(RouteRequest request) {
         int start = startNode(request.start);
-        return request.avoidWilderness && !wilderness(request.target) && !(start >= 0 && wilderness(start));
+        return request.noWild && !wilderness(request.target) && !(start >= 0 && wilderness(start));
     }
 
     Route search(RouteRequest request, BooleanSupplier cancelled, int costLimit) {
@@ -734,14 +633,14 @@ final class Pathfinder {
 
     /** Relaxes the jumps; whether one into the Wilderness was left out. */
     static boolean jumps(int[] edges, List<Edge> all, NodeTable nodes, LongHeap open, Heuristic heuristic, int g,
-        boolean avoidWilderness) {
+        boolean noWild) {
         if (edges == null) {
             return false;
         }
         boolean keptOut = false;
         for (int i : edges) {
             Edge e = all.get(i);
-            if (!(avoidWilderness && wilderness(e.to))) {
+            if (!(noWild && wilderness(e.to))) {
                 relax(nodes, open, heuristic, e.to, g + e.cost, i);
             } else {
                 keptOut = true;

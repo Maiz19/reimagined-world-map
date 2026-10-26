@@ -1,10 +1,11 @@
 package com.hdmapreforged;
 
+import static com.hdmapreforged.PoiType.t;
 import static java.lang.Math.*;
 import static com.hdmapreforged.RouteFeature.*;
 import static com.hdmapreforged.RoutePanels.*;
 import static com.hdmapreforged.SearchResults.*;
-import static com.hdmapreforged.HdMapReforgedConfig.GROUP;
+import static com.hdmapreforged.MapConfig.GROUP;
 import static com.hdmapreforged.HousePlan.*;
 import static com.hdmapreforged.HouseSettings.*;
 
@@ -23,7 +24,6 @@ import javax.imageio.*;
 import javax.imageio.stream.*;
 import javax.swing.*;
 import lombok.*;
-import lombok.extern.slf4j.*;
 import net.runelite.api.*;
 import net.runelite.api.Point;
 import net.runelite.api.coords.*;
@@ -38,7 +38,6 @@ import net.runelite.client.util.*;
  * One's own house for routes, kept per account: looked through once per visit (its portals, nexus and such, and its
  * plan), its picture drawn at the surface map's edge, and its panel. Threads as {@link RouteFeature}'s.
  */
-@Slf4j
 @RequiredArgsConstructor
 public final class RouteHouse {
     final RouteFeature routes;
@@ -114,8 +113,7 @@ public final class RouteHouse {
 
     /** The player's tile on the plan of their own house once seen; else -1 (the route starts from its ways out). */
     int inHouse() {
-        Player player = routes.client.getLocalPlayer();
-        var local = player == null ? null : player.getLocalLocation();
+        var local = me();
         var view = routes.client.getTopLevelWorldView();
         var seen = plan;
         int at = seen == null || !house.own() || local == null || view == null ? -1
@@ -134,6 +132,12 @@ public final class RouteHouse {
         }
         enteredAt = -1;
         return at;
+    }
+
+    /** Where the player stands in the scene; null before there is one. */
+    LocalPoint me() {
+        Player player = routes.client.getLocalPlayer();
+        return player == null ? null : player.getLocalLocation();
     }
 
     /** Ticks after coming in during which the arrival is the tile while the scene's reading has not changed. */
@@ -177,8 +181,7 @@ public final class RouteHouse {
      */
     void scanHouse() {
         var view = routes.client.getTopLevelWorldView();
-        Player player = routes.client.getLocalPlayer();
-        var me = player == null ? null : player.getLocalLocation();
+        var me = me();
         if (view == null || me == null) {
             house.scanAgain();
             return;
@@ -416,14 +419,8 @@ public final class RouteHouse {
         if (io == null) {
             fit.run();
         } else {
-            later(io, fit);
-        }
-    }
-
-    /** The plugin's io threads stop with it: work handed over after that is dropped. */
-    static void later(Executor io, Runnable work) {
-        if (!TileCache.execute(io, work)) {
-            log.debug("Plugin stopped; house file work dropped");
+            // The plugin's io threads stop with it: work handed over after that is dropped.
+            TileCache.execute(io, fit);
         }
     }
 
@@ -441,9 +438,8 @@ public final class RouteHouse {
                 try (ImageOutputStream out = new MemoryCacheImageOutputStream(bytes)) {
                     ImageIO.write(all, "png", out);
                 }
-                TileCache.writeAtomically(file, bytes.toByteArray());
+                TileCache.writeSafe(file, bytes.toByteArray());
             } catch (IOException | RuntimeException e) {
-                log.debug("Could not keep the house's look", e);
             }
         }
     }
@@ -456,7 +452,7 @@ public final class RouteHouse {
         if (file == null) {
             return;
         }
-        later(houseIo, () -> {
+        TileCache.execute(houseIo, () -> {
             var look = new BufferedImage[4];
             try (ImageInputStream in = file.isFile() ? new MemoryCacheImageInputStream(new ByteArrayInputStream(
                 TileCache.read(file))) : null) {
@@ -465,7 +461,6 @@ public final class RouteHouse {
                     look[z] = all.getSubimage(0, z * LOOK, LOOK, LOOK);
                 }
             } catch (IOException | RuntimeException e) {
-                log.debug("Could not read the house's look", e);
             }
             // Not over a scan made meanwhile, nor for another account.
             if (houseOf == account && houseLook.compareAndSet(none, look)) {
@@ -501,7 +496,7 @@ public final class RouteHouse {
         houseOf = routes.client.getAccountHash();
         routes.loadBank();
         routes.planted.load(routes.configManager.getRSProfileConfiguration(GROUP,
-            PlantedSpiritTrees.KEY));
+            Planted.KEY));
         String saved = routes.configManager.getRSProfileConfiguration(GROUP, HOUSE_KEY);
         var features = new LinkedHashSet<String>(Arrays.asList(saved == null ? new String[0] : saved.split(",")));
         features.remove("");
@@ -547,10 +542,7 @@ public final class RouteHouse {
             float x = (float) RouteText.x(p, node) - g.getFontMetrics().stringWidth(label) / 2f;
             float y = (float) RouteText.y(p, node);
             if (Tiles.z(node) == p.plane()) {
-                g.setColor(Color.BLACK);
-                g.drawString(label, x + 1, y + 1);
-                g.setColor(Color.WHITE);
-                g.drawString(label, x, y);
+                TextSprites.shadowed(g, label, x, y, Color.WHITE);
             }
         });
     }
@@ -562,26 +554,21 @@ public final class RouteHouse {
         var seen = plan;
         var now = houseFeatures;
         if (collision == null || houseOf == Long.MIN_VALUE) {
-            panel.add(label("Log in to see and set this account's house.", width, NOTE));
+            panel.add(label(t("houseLogIn"), width, NOTE));
             return panel;
         }
         Color gray = ColorScheme.LIGHT_GRAY_COLOR;
-        panel.add(label(seen == null ? "Teleport into it once: its rooms, portals, nexus and jewellery box are read "
-            + "then. Or set them here." : "As seen last time you were in it, for this account. Routes walk through it; "
-            + "right-click in it for a route there.", width, gray));
-        var box = new JComboBox<String>(new String[]{"No jewellery box", "Basic jewellery box",
-            "Fancy jewellery box", "Ornate jewellery box"});
+        panel.add(label(t(seen == null ? "houseUnseen" : "houseSeen"), width, gray));
+        var box = new JComboBox<String>(t("houseBoxes").split("\\|"));
         box.setSelectedIndex(Arrays.asList(BOXES).indexOf(HouseSettings.box(now)));
-        String[] amulets = {"Mounted amulet of glory", "Mounted Xeric's talisman", "Mounted digsite pendant"};
+        String[] amulets = t("houseAmulets").split("\\|");
         var mounted = IntStream.range(0, amulets.length).mapToObj(i -> new JCheckBox(amulets[i],
             now.contains(MOUNTED[i]))).toArray(JCheckBox[]::new);
         // A superior garden has one of these.
-        var garden = new JComboBox<String>(new String[]{"No fairy ring or spirit tree", "Fairy ring",
-            "Spirit tree", "Both (a spiritual fairy tree, or two gardens)"});
+        var garden = new JComboBox<String>(t("houseGardens").split("\\|"));
         garden.setSelectedIndex(HouseSettings.garden(now));
-        var obelisk = new JCheckBox("Obelisk to the Wilderness", now.contains("obelisk"));
-        obelisk.setToolTipText("Routes use it with the Hard Wilderness Diary, which lets you choose the obelisk it "
-            + "leads to");
+        var obelisk = new JCheckBox(t("houseObelisk"), now.contains("obelisk"));
+        obelisk.setToolTipText(t("houseObeliskTip"));
         JTextField portals = new JTextField(HouseSettings.places(now, PORTAL));
         JTextField nexus = new JTextField(HouseSettings.places(now, NEXUS));
         long account = houseOf;
@@ -598,8 +585,8 @@ public final class RouteHouse {
         garden.addActionListener(save);
         obelisk.addActionListener(save);
         for (JTextField places : new JTextField[]{portals, nexus}) {
-            places.setToolTipText("Where they lead, as the spellbooks name them, with commas; Enter saves");
-            FullMapWindow.typable(places);
+            places.setToolTipText(t("housePlaces"));
+            BigWindow.typable(places);
             places.addActionListener(save);
         }
         var parts = new ArrayList<JComponent>(List.of(box));

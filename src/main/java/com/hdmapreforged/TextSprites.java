@@ -41,4 +41,12 @@ final class TextSprites {
         g.setColor(color);
         g.drawString(text, x, y);
     }
+
+    /** {@code text} in {@code color} over a black copy one pixel down and right, as the game writes. */
+    static void shadowed(Graphics2D g, String text, float x, float y, Color color) {
+        g.setColor(Color.BLACK);
+        g.drawString(text, x + 1, y + 1);
+        g.setColor(color);
+        g.drawString(text, x, y);
+    }
 }

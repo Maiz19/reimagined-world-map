@@ -31,20 +31,20 @@ final class PartyMapRules {
         TOO_SOON,
     }
 
-    static Join join(String code, boolean loggedIn, String currentPassphrase, long lastChange, long now) {
-        return code == null ? Join.INVALID_CODE : code.equals(currentPassphrase) ? Join.ALREADY_IN
+    static Join join(String code, boolean loggedIn, String passphrase, long lastChange, long now) {
+        return code == null ? Join.INVALID_CODE : code.equals(passphrase) ? Join.ALREADY_IN
             : !loggedIn ? Join.NOT_LOGGED_IN : now - lastChange < CHANGE_COOLDOWN_MILLIS ? Join.TOO_SOON
-            : currentPassphrase != null ? Join.CONFIRM_LEAVE_OTHER : Join.JOIN;
+            : passphrase != null ? Join.CONFIRM_LEAVE_OTHER : Join.JOIN;
     }
 
     /** Only a party this plugin joined; parties the user joined elsewhere are never left. */
-    static boolean leaveIdle(String joinedCode, String currentPassphrase, Long loggedOutSince, long now) {
-        return leaveOnShutdown(joinedCode, currentPassphrase) && loggedOutSince != null
-            && now - loggedOutSince >= IDLE_LEAVE_MILLIS;
+    static boolean leaveIdle(String joinedCode, String passphrase, Long outSince, long now) {
+        return leaveOnShutdown(joinedCode, passphrase) && outSince != null
+            && now - outSince >= IDLE_LEAVE_MILLIS;
     }
 
-    static boolean leaveOnShutdown(String joinedCode, String currentPassphrase) {
-        return joinedCode != null && joinedCode.equals(currentPassphrase);
+    static boolean leaveOnShutdown(String joinedCode, String passphrase) {
+        return joinedCode != null && joinedCode.equals(passphrase);
     }
 
     /** {@link #shouldSend} runs on the client thread; party events reset and force it from other threads. */

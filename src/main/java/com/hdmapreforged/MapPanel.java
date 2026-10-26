@@ -1,7 +1,6 @@
 package com.hdmapreforged;
 
 import static javax.swing.BorderFactory.*;
-import static java.awt.Component.*;
 import static com.hdmapreforged.FriendsWidget.*;
 import static com.hdmapreforged.SearchResults.*;
 import static net.runelite.client.ui.ColorScheme.*;
@@ -15,47 +14,16 @@ import java.util.List;
 import java.util.function.*;
 import javax.swing.*;
 import javax.swing.Timer;
-import net.runelite.api.*;
 import net.runelite.api.coords.*;
 import net.runelite.client.ui.*;
 
 /** The sidebar: buttons to open the map, the route's steps, custom routes and the party. Swing thread. */
 final class MapPanel extends PluginPanel {
-    interface Friends {
-        boolean inGroup();
-
-        List<Row> rows();
-
-        /** The world the player is on, or 0. */
-        int world();
-
-        Images images();
-
-        /** A member's details as the map's card paints them, with a page of its own. */
-        MemberPages pages();
-
-        boolean canRejoin();
-
-        /** Rejoins the last party. */
-        void join(Component from);
-
-        /** Has the maps follow a member. */
-        void follow(long id);
-
-        /** A member's experience drops rising now; what they got this session, or null. */
-        List<PartyMapMembers.Drop> xp(long id);
-
-        PartyMapMembers.Session session(long id);
-
-        /** {@code news} runs (Swing) whenever members' news came (a drop, experience). */
-        void watch(Runnable news);
-    }
-
     /** Text width inside the sidebar's padding. */
     static final int TEXT_WIDTH = PANEL_WIDTH - 52;
 
     final Consumer<WorldPoint> showOnMap;
-    final Friends friends;
+    final PartyMap friends;
     final Function<WorldPoint, String> placeName;
     final JPanel routeHolder = column();
     /** Shown only with no route; a route's steps have their own title. */
@@ -69,7 +37,7 @@ final class MapPanel extends PluginPanel {
             for (Component row : getComponents()) {
                 Object id = row instanceof JComponent ? ((JComponent) row).getClientProperty(MEMBER) : null;
                 if (id != null) {
-                    PartyMapOverlay.paintXp((Graphics2D) g, friends.xp((Long) id), friends.images()::skill,
+                    PartyOverlay.paintXp((Graphics2D) g, friends.xp((Long) id), friends::skill,
                         row.getX() + row.getWidth() - 64, row.getY() + row.getHeight() - 5);
                 }
             }
@@ -91,12 +59,12 @@ final class MapPanel extends PluginPanel {
     List<Long> listed = List.of();
     String friendsShown;
 
-    MapPanel(Runnable openMap, Runnable openWindow, Consumer<WorldPoint> showOnMap, Friends friends,
+    MapPanel(Runnable openMap, Runnable openWindow, Consumer<WorldPoint> showOnMap, PartyMap friends,
         Function<WorldPoint, String> placeName) {
         super(false);
         this.showOnMap = showOnMap;
         this.friends = friends;
-        pages = friends.pages();
+        pages = new MemberPages(friends);
         friendsHolder.setLayout(new BoxLayout(friendsHolder, BoxLayout.Y_AXIS));
         friendsHolder.setOpaque(false);
         friendsHolder.setAlignmentX(LEFT_ALIGNMENT);
@@ -107,7 +75,7 @@ final class MapPanel extends PluginPanel {
         JPanel content = column();
         content.setBorder(createEmptyBorder(10, 10, 10, 10));
         JPanel buttons = new JPanel(new GridLayout(1, 2, 6, 0));
-        buttons.add(tip(button("Open map", openMap), "The map over the game (also with the map key)"));
+        buttons.add(tip(button("Open map", openMap), PoiType.t("t16")));
         buttons.add(tip(button("In a window", openWindow), "The map in a window of its own"));
         content.add(fitted(buttons));
         content.add(Box.createVerticalStrut(10));
@@ -146,11 +114,12 @@ final class MapPanel extends PluginPanel {
             }
         });
         news.setRepeats(false);
-        friends.watch(() -> {
+        // Run on the Swing thread whenever members' news came (a drop, experience).
+        friends.sidebarNews = () -> {
             if (isShowing() && !news.isRunning()) {
                 news.start();
             }
-        });
+        };
         refreshFriends();
     }
 
@@ -164,7 +133,7 @@ final class MapPanel extends PluginPanel {
         routeHolder.removeAll();
         routeHeading.setVisible(section == null);
         if (section == null) {
-            routeHolder.add(text("No route. Right-click a place on the map, Path to here."));
+            routeHolder.add(text(PoiType.t("t17")));
         } else {
             var steps = section.apply(TEXT_WIDTH);
             steps.setAlignmentX(LEFT_ALIGNMENT);
@@ -179,10 +148,10 @@ final class MapPanel extends PluginPanel {
             editorSection = section;
             showTours();
         }, showOnMap, "\u2039 All routes");
-        refreshTours();
+        redoTours();
     }
 
-    void refreshTours() {
+    void redoTours() {
         if (editor != null && editor.isOpen()) {
             editor.refresh();
             return;
@@ -213,9 +182,9 @@ final class MapPanel extends PluginPanel {
         List<Tour> saved = tours == null ? Collections.emptyList() : tours.tours();
         String running = tours == null ? null : tours.runningTour();
         if (saved.isEmpty()) {
-            toursHolder.add(text("None yet. Right-click the map, Add to custom route."));
+            toursHolder.add(text(PoiType.t("t18")));
             JButton make = tip(button("New route", () -> edit(new Tour(Tour.unique(saved, "My route"),
-                Collections.emptyList()))), "Make a route; add its stops from the map");
+                Collections.emptyList()))), PoiType.t("t19"));
             make.setAlignmentX(LEFT_ALIGNMENT);
             toursHolder.add(make);
         }
@@ -223,7 +192,7 @@ final class MapPanel extends PluginPanel {
             boolean runs = tour.name.equals(running);
             String what = plural(tour.stops.size(), "stop");
             toursHolder.add(entry(tour.name, runs ? "Running, " + what : what, runs ? new Color(120, 220, 140) : null,
-                "Open this route: its stops, their order, Run", () -> edit(tour)));
+                PoiType.t("t20"), () -> edit(tour)));
         }
         refresh(toursHolder);
     }
@@ -245,9 +214,9 @@ final class MapPanel extends PluginPanel {
         if (!isShowing() && friendsShown != null) {
             return;
         }
-        boolean in = friends.inGroup();
+        boolean in = friends.party.isInParty();
         List<Row> rows = in ? friends.rows() : Collections.emptyList();
-        boolean rejoin = !in && friends.canRejoin();
+        boolean rejoin = !in && friends.lastParty() != null;
         StringBuilder key = new StringBuilder(in ? "in" : rejoin ? "out, rejoin" : "out");
         var places = new String[rows.size()];
         for (int i = 0; i < rows.size(); i++) {
@@ -255,7 +224,7 @@ final class MapPanel extends PluginPanel {
             places[i] = place(row);
             key.append('|').append(row.name).append(',').append(row.world).append(',').append(places[i])
                 .append(',').append(row.point != null).append(',').append(row.color);
-            var got = friends.session(row.id);
+            var got = friends.members.session(row.id);
             key.append(',').append(got == null || got.latest.isEmpty() ? 0 : got.latest.get(0).at);
             if (row.id == openFriend) {
                 // Its pages paint what is shared as it comes: no rebuild for it.
@@ -274,12 +243,11 @@ final class MapPanel extends PluginPanel {
                 friendsHolder.add(capped(join));
                 friendsHolder.add(Box.createVerticalStrut(4));
             }
-            friendsHolder.add(text("Not in a party. In one (RuneLite's Party panel), its members show here: where "
-                + "they are and what they carry."));
+            friendsHolder.add(text(PoiType.t("t21")));
         } else if (rows.isEmpty()) {
             friendsHolder.add(text("No one else in your party yet."));
         }
-        int me = friends.world();
+        int me = friends.myWorld;
         var ids = new ArrayList<Long>();
         for (int i = 0; i < rows.size(); i++) {
             Row row = rows.get(i);
@@ -290,7 +258,7 @@ final class MapPanel extends PluginPanel {
             var line = friend(row, where);
             line.putClientProperty(MEMBER, row.id);
             friendsHolder.add(line);
-            var got = friends.session(row.id);
+            var got = friends.members.session(row.id);
             if (got != null && !got.latest.isEmpty()) {
                 friendsHolder.add(latest(got));
             }
@@ -307,17 +275,16 @@ final class MapPanel extends PluginPanel {
     static final String MEMBER = "partyMember";
 
     /** A member's latest shared drops this session, newest first: picture and worth (an untradeable's name on hover). */
-    JComponent latest(PartyMapMembers.Session got) {
+    JComponent latest(PartyMembers.Session got) {
         JPanel line = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         line.setOpaque(false);
-        var images = friends.images();
         for (var drop : got.latest.subList(0, Math.min(3, got.latest.size()))) {
-            BufferedImage picture = images.item(drop.item, drop.quantity);
-            JLabel label = new JLabel(drop.name != null ? "" : PartyMapOverlay.coins(drop.value),
+            BufferedImage picture = friends.item(drop.item, drop.quantity);
+            JLabel label = new JLabel(drop.name != null ? "" : PartyOverlay.coins(drop.value),
                 picture == null ? null : new ImageIcon(picture), JLabel.LEFT);
             label.putClientProperty("html.disable", Boolean.TRUE);
             label.setFont(FontManager.getRunescapeSmallFont());
-            label.setForeground(drop.name != null ? PartyMapOverlay.UNTRADEABLE : LIGHT_GRAY_COLOR);
+            label.setForeground(drop.name != null ? PartyOverlay.UNTRADEABLE : LIGHT_GRAY_COLOR);
             label.setToolTipText(drop.name);
             line.add(label);
         }
@@ -372,7 +339,7 @@ final class MapPanel extends PluginPanel {
         actions.add(show);
         if (row.world > 0 && me > 0 && row.world != me) {
             JLabel world = new JLabel("World " + row.world, JLabel.CENTER);
-            world.setToolTipText("On another world: hop there with the game's world switcher");
+            world.setToolTipText(PoiType.t("t22"));
             actions.add(world);
         }
         box.add(fitted(actions));

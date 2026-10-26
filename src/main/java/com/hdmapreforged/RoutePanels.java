@@ -1,5 +1,6 @@
 package com.hdmapreforged;
 
+import static com.hdmapreforged.PoiType.t;
 import static javax.swing.BorderFactory.*;
 import static java.awt.Font.*;
 import static com.hdmapreforged.RouteFeature.*;
@@ -105,7 +106,7 @@ final class RoutePanels {
             var blockers = actions == null || route.outcome != Outcome.NEAREST ? null
                 : blockers(actions.why);
             if (blockers != null) {
-                panel.add(label(blockers.isEmpty() ? "Needs something the map can't name (a quest step, a key)."
+                panel.add(label(blockers.isEmpty() ? t("needsUnknown")
                     : blockers.contains(NO_WAY) ? NO_WAY : "Needs: " + String.join(", ", blockers), width, NOTE));
             }
             if (!route.steps.isEmpty()) {
@@ -133,7 +134,7 @@ final class RoutePanels {
                     + escape(saying(route, step, false))
                     + (detail != null ? "<br><span style='color:" + (cannot ? "#ff7070" : "#a0a0a0") + "'>"
                         + escape(detail) + "</span>" : "")
-                    + "</body></html>", leads ? "Show where this leads on the map" : "Show on the map",
+                    + "</body></html>", leads ? t("showLeads") : "Show on the map",
                     () -> focus.accept(worldPoint(point)));
                 row.setForeground(number - 2 < done ? MEDIUM_GRAY_COLOR : cannot ? CANNOT
                     : color(step, walk, jump));
@@ -181,8 +182,7 @@ final class RoutePanels {
             destination.setMargin(new Insets(1, 0, 1, 0));
             panel.add(destination);
             if (unsure) {
-                add(panel, 4, label("Some steps may need a quest, level or item the map does not know about.", width,
-                    MEDIUM_GRAY_COLOR));
+                add(panel, 4, label(t("unsure"), width, MEDIUM_GRAY_COLOR));
             }
         }
         if (actions != null && !actions.neverUsed().isEmpty()) {

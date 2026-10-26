@@ -14,7 +14,6 @@ import java.util.stream.*;
 import javax.imageio.*;
 import javax.imageio.stream.*;
 import lombok.*;
-import lombok.extern.slf4j.*;
 import net.runelite.client.util.*;
 import okhttp3.*;
 
@@ -22,7 +21,6 @@ import okhttp3.*;
  * Map tiles from our map server, in memory and on disk, downloaded a few at a time. Each frame queues tiles farthest first
  * and loads at frame end, so the middle loads first; tiles scrolled away before their turn are dropped.
  */
-@Slf4j
 @RequiredArgsConstructor
 final class TileCache {
     static final int TILE_SIZE = 256, MIN_ZOOM = -3, MAX_ZOOM = 3;
@@ -136,22 +134,16 @@ final class TileCache {
                 }
                 var missingList = old.joinSegment(MISSING);
                 if (missingList.isFile()) {
-                    StringBuilder kept = new StringBuilder();
+                    var kept = new StringBuilder();
                     try (BufferedReader in = missingList.openBufferedReader()) {
-                        String line;
-                        while ((line = in.readLine()) != null) {
-                            var key = Key.parse(line);
-                            if (key != null && !changed.contains(key.path())) {
-                                kept.append(line.trim()).append('\n');
-                            }
-                        }
+                        in.lines().filter(line -> Key.parse(line) != null && !changed.contains(Key.parse(line).path()))
+                            .forEach(line -> kept.append(line.trim()).append('\n'));
                     }
                     missingList.write(kept.toString());
                 }
                 old.moveTo(fresh);
                 return true;
             } catch (IOException | RuntimeException e) {
-                log.debug("Could not carry the tiles of {} over to {}", from, to, e);
                 return false;
             }
         }
@@ -193,7 +185,6 @@ final class TileCache {
                 folder.joinSegment(MISSING).write(key.map + " " + key.zoom + " " + key.plane + " " + key.x + " " + key.y
                     + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             } catch (IOException | RuntimeException e) {
-                log.debug("Could not remember missing tile {}", key.path(), e);
             }
         }
     }
@@ -208,7 +199,6 @@ final class TileCache {
         try (BufferedReader in = file.openBufferedReader()) {
             in.lines().map(Key::parse).filter(Objects::nonNull).forEach(keys::add);
         } catch (IOException | RuntimeException e) {
-            log.debug("Could not read {}", file, e);
             return;
         }
         synchronized (this) {
@@ -411,7 +401,6 @@ final class TileCache {
         try {
             bytes = file.size() > MAX_TILE_BYTES ? null : read(file);
         } catch (IOException | RuntimeException e) {
-            log.debug("Could not read cached tile {}", file, e);
             return null;
         }
         try {
@@ -420,7 +409,6 @@ final class TileCache {
                 return image;
             }
         } catch (IOException | RuntimeException e) {
-            log.debug("Unreadable cached tile {}", file, e);
         }
         delete(file);
         return null;
@@ -444,7 +432,6 @@ final class TileCache {
             download.enqueue(new Callback() {
                 public void onFailure(Call call, IOException e) {
                     calls.remove(call);
-                    log.debug("Tile download failed: {}", key.path(), e);
                     finish(key, started, null, false, false);
                 }
 
@@ -454,7 +441,6 @@ final class TileCache {
                     try (var body = response.body()) {
                         bytes = bytes(response, body);
                     } catch (IOException | RuntimeException e) {
-                        log.debug("Unusable tile {}", key.path(), e);
                         finish(key, started, null, false, false);
                         return;
                     }
@@ -465,7 +451,6 @@ final class TileCache {
                 }
             });
         } catch (RuntimeException e) {
-            log.debug("Could not load tile {}", key.path(), e);
             finish(key, started, null, false, false);
         }
     }
@@ -490,7 +475,6 @@ final class TileCache {
                 }
             }
         } catch (IOException | RuntimeException e) {
-            log.debug("Unusable tile {}", key.path(), e);
         }
         finish(key, started, image, bytes == null, image != null);
     }
@@ -623,9 +607,8 @@ final class TileCache {
 
     void write(Filepath file, byte[] bytes) {
         try {
-            writeAtomically(file, bytes);
+            writeSafe(file, bytes);
         } catch (IOException | RuntimeException e) {
-            log.debug("Could not cache tile {}", file, e);
             return;
         }
         if (diskBytes.addAndGet(bytes.length) > diskLimitMb * MB) {
@@ -637,7 +620,7 @@ final class TileCache {
      * Through an own temp file (two threads may write the same file at once), then moved over the target; makes the
      * folder, which another thread may make at the same moment.
      */
-    static void writeAtomically(Filepath target, byte[] bytes) throws IOException {
+    static void writeSafe(Filepath target, byte[] bytes) throws IOException {
         var folder = target.getParent();
         folder.createDirectories();
         var temp = folder.createTempFile(target.getFileName() + ".", PART_SUFFIX);
@@ -685,7 +668,6 @@ final class TileCache {
                         file.moveTo(target);
                     }
                 } catch (IOException | RuntimeException e) {
-                    log.debug("Could not keep {}", file, e);
                 }
             }
             deleteTree(dir);
@@ -789,7 +771,6 @@ final class TileCache {
         try {
             file.deleteRecursively();
         } catch (IOException e) {
-            log.debug("Could not remove {}", file, e);
         }
     }
 
@@ -798,7 +779,6 @@ final class TileCache {
             file.deleteIfExists();
             return true;
         } catch (IOException e) {
-            log.debug("Could not remove {}", file, e);
             return false;
         }
     }

@@ -6,7 +6,8 @@ import lombok.*;
 import net.runelite.api.coords.*;
 
 /** Where a monster or NPC is, as places of close spawns, and what it drops ({@link WorldData#spawns}); also a kind's places. */
-final class NpcSpawns {
+@RequiredArgsConstructor
+final class Spawns {
     @RequiredArgsConstructor
     static final class Group {
         final String name, location;
@@ -14,8 +15,9 @@ final class NpcSpawns {
         final String category;
         /** What the list says of it ("7 here", "4 spots"); empty or null for nothing. */
         final String note;
-        final Color color;
-        Poi poi;
+        // Not in search2.json.
+        final transient Color color;
+        transient Poi poi;
         /** How many stand here (see {@link WorldData#spawns}); 0 when not counted. */
         int seen;
         /** The way in to a boss fought in an instance, not where it stands. */
@@ -46,7 +48,7 @@ final class NpcSpawns {
         }
 
         WorldPoint center() {
-            return NpcSpawns.center(points);
+            return Spawns.center(points);
         }
     }
 
@@ -64,14 +66,4 @@ final class NpcSpawns {
     final int npc;
     /** The page's drop tables, the standard one first, the items named; empty when its drops are not known. */
     final List<WorldData.Table> tables;
-    /** The standard table's drops. */
-    final List<WorldData.Drop> drops;
-
-    NpcSpawns(String page, List<Group> groups, int npc, List<WorldData.Table> tables) {
-        this.page = page;
-        this.groups = Collections.unmodifiableList(groups);
-        this.npc = npc;
-        this.tables = Collections.unmodifiableList(tables);
-        this.drops = tables.isEmpty() ? Collections.emptyList() : Collections.unmodifiableList(tables.get(0).drops);
-    }
 }

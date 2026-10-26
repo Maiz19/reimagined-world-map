@@ -18,12 +18,13 @@ final class ItemNames implements IntFunction<String>, SearchResults.Prices {
     final ClientThread clientThread;
     final ItemManager itemManager;
     final Map<Integer, String> names = new ConcurrentHashMap<>();
-    /** Id to last lookup time; retried later, as the game's item data may not have been ready. */
-    final Map<Integer, Long> unnamed = new ConcurrentHashMap<>();
-    static final long RETRY_MS = 30_000;
     final Map<Integer, Integer> prices = new ConcurrentHashMap<>();
-    /** Id to when its price was looked up; prices move, so they are looked up again after a while. */
-    final Map<Integer, Long> priced = new ConcurrentHashMap<>();
+    /**
+     * Id to when it was last looked up: a name not found is tried again after 30 seconds (the game's item data may not
+     * have been ready), a price after 10 minutes (prices move).
+     */
+    final Map<Integer, Long> looked = new ConcurrentHashMap<>();
+    static final long RETRY_MS = 30_000;
     /** More than a big shop sells; the game's own image cache keeps only 128 for every plugin. */
     static final int IMAGES = 512;
     /** The pictures of the items shown last, so a list built again never asks the game again. Swing thread. */
@@ -41,7 +42,7 @@ final class ItemNames implements IntFunction<String>, SearchResults.Prices {
 
     public String apply(int id) {
         String name = names.get(id);
-        return name != null || !unnamed.containsKey(id) ? name : "Item " + id;
+        return name != null || !looked.containsKey(id) ? name : "Item " + id;
     }
 
     /** Client thread. */
@@ -56,15 +57,8 @@ final class ItemNames implements IntFunction<String>, SearchResults.Prices {
     }
 
     boolean wanted(int id, long now) {
-        if (!names.containsKey(id)) {
-            Long tried = unnamed.get(id);
-            if (tried == null || now - tried >= RETRY_MS) {
-                return true;
-            }
-        }
-        Long priced = this.priced.get(id);
-        // Prices are looked up again after 10 minutes.
-        return priced == null || now - priced >= 10 * 60_000;
+        Long at = looked.get(id);
+        return at == null || now - at >= (names.containsKey(id) ? 10 * 60_000 : RETRY_MS);
     }
 
     /** Client thread. */
@@ -88,17 +82,12 @@ final class ItemNames implements IntFunction<String>, SearchResults.Prices {
                 if (!wanted(id, at)) {
                     continue;
                 }
-                if (!names.containsKey(id)) {
-                    String name = lookUp(id);
-                    if (name != null) {
-                        names.put(id, name);
-                        unnamed.remove(id);
-                    } else {
-                        unnamed.put(id, at);
-                    }
+                String name = names.containsKey(id) ? null : lookUp(id);
+                if (name != null) {
+                    names.put(id, name);
                 }
                 prices.put(id, lookUpPrice(id));
-                priced.put(id, at);
+                looked.put(id, at);
             }
             SwingUtilities.invokeLater(done);
         });

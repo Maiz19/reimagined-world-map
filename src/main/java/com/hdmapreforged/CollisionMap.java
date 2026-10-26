@@ -19,7 +19,6 @@ final class CollisionMap {
 
     /** By {@code region * 4 + plane}: five bitsets of 64 longs, or null. */
     final long[][] floors = new long[1 << 18][];
-    final List<Transition> transitions;
     /** By packed tile: "Chop-down Vines (bring an axe)". */
     final Map<Integer, String> obstacles;
     final boolean[] obstacleRegions = new boolean[1 << 16];
@@ -35,20 +34,12 @@ final class CollisionMap {
 
     static CollisionMap read(InputStream zipped) throws IOException {
         byte[] bin = null;
-        var transitions = new ArrayList<Transition>();
         var obstacles = new HashMap<Integer, String>();
         var zip = new ZipInputStream(zipped);
         ZipEntry entry;
         while ((entry = zip.getNextEntry()) != null) {
             if ("collision.bin".equals(entry.getName())) {
                 bin = RouteFiles.read(zip, MAX_BIN_BYTES, "collision.bin");
-            } else if ("transitions.tsv".equals(entry.getName())) {
-                Pathfinder.rows(new ByteArrayInputStream(RouteFiles.read(zip, MAX_TABLE_BYTES, "transitions.tsv")), 1, line -> {
-                    Transition t = Transition.parse(line[0]);
-                    if (t != null) {
-                        transitions.add(t);
-                    }
-                });
             } else if ("obstacles.tsv".equals(entry.getName())) {
                 Pathfinder.rows(new ByteArrayInputStream(RouteFiles.read(zip, MAX_TABLE_BYTES, "obstacles.tsv")), 0,
                     parts -> obstacle(obstacles, parts));
@@ -57,7 +48,7 @@ final class CollisionMap {
         if (bin == null) {
             throw new IOException("No collision.bin");
         }
-        var map = new CollisionMap(Collections.unmodifiableList(transitions), obstacles);
+        var map = new CollisionMap(obstacles);
         obstacles.keySet().forEach(node -> map.obstacleRegions[region(Tiles.x(node), Tiles.y(node))] = true);
         map.decode(bin);
         return map;
@@ -170,7 +161,7 @@ final class CollisionMap {
     }
 
     /** Nearest walkable tile within {@code radius} (Chebyshev rings, then straight distance), packed, or -1. */
-    int nearestWalkable(int x, int y, int z, int radius) {
+    int walkableNear(int x, int y, int z, int radius) {
         return nearest(x, y, z, 0, radius, x, y, null, false);
     }
 
@@ -178,7 +169,7 @@ final class CollisionMap {
      * The same, ties going farthest from {@code (awayX, awayY)} (a shortcut's near side, not a pocket between its
      * stones), and tiles {@code avoid} names (a shut-in pocket) only when no other is within reach.
      */
-    int nearestWalkable(int x, int y, int z, int radius, int awayX, int awayY, IntPredicate avoid) {
+    int walkableNear(int x, int y, int z, int radius, int awayX, int awayY, IntPredicate avoid) {
         int plain = nearest(x, y, z, 0, radius, awayX, awayY, null, false);
         if (avoid == null || plain < 0 || !avoid.test(plain)) {
             return plain;

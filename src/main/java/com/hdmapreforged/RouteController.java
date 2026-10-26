@@ -1,5 +1,6 @@
 package com.hdmapreforged;
 
+import static com.hdmapreforged.PoiType.t;
 import static com.hdmapreforged.Route.Outcome.*;
 import static com.hdmapreforged.Tiles.*;
 
@@ -262,7 +263,7 @@ final class RouteController {
     void start(RouteRequest request, boolean user) {
         noStart = request == null;
         if (request == null) {
-            status = "Your position is not known here; try again outside";
+            status = t("noPosition");
             changed.accept(this);
             return;
         }

@@ -8,7 +8,7 @@ import lombok.*;
 import net.runelite.api.coords.*;
 
 /** Last known location of each party member: written from network threads, read on Swing, so all synchronized. */
-final class PartyMapMembers {
+final class PartyMembers {
     /** Heartbeats come every 30 s; after this without news the marker fades. */
     static final long FRESH_MILLIS = 75_000, FADE_MILLIS = 5 * 60_000;
     /** After this without news the member is left off the map (probably crashed). */

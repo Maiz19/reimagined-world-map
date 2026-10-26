@@ -28,58 +28,29 @@ final class BaseMaps {
         }
     }
 
-    static final int MAX_COORDINATE = 20_000, MAX_NAME = 100;
+    /** maps.json's entries: {@code {mapId, name, bounds: [[minX, minY], [maxX, maxY]], center: [x, y], tiles}}. */
+    static final class Entry {
+        int mapId;
+        String name;
+        int[][] bounds;
+        int[] center;
+        /** Absent: its own. */
+        Integer tiles;
+    }
 
-    /** Implausible entries are left out, not the whole list; an unreadable list gives no maps. */
+    /** An unreadable list gives no maps (the builders check the entries: BaseMapsTest). */
     static BaseMaps parse(Gson gson, Reader json) {
-        JsonArray array;
-        try {
-            array = gson.fromJson(json, JsonArray.class);
-        } catch (RuntimeException e) {
-            return new BaseMaps(Collections.emptyList());
-        }
         var maps = new ArrayList<BaseMap>();
-        var ids = new HashSet<Integer>();
-        for (var element : array == null ? new JsonArray() : array) {
-            var map = map(element);
-            if (map != null && ids.add(map.id)) {
-                maps.add(map);
+        try {
+            for (var e : gson.fromJson(json, Entry[].class)) {
+                // A map without a name (the sort below needs it) makes the file unusable, as one without bounds.
+                maps.add(new BaseMap(e.mapId, Objects.requireNonNull(e.name), e.bounds[0][0], e.bounds[0][1], e.bounds[1][0], e.bounds[1][1],
+                    e.center[0], e.center[1], e.tiles == null ? e.mapId : e.tiles));
             }
+        } catch (RuntimeException e) {
+            maps.clear();
         }
         return new BaseMaps(maps);
-    }
-
-    static BaseMap map(JsonElement element) {
-        try {
-            JsonObject o = element.getAsJsonObject();
-            var bounds = o.getAsJsonArray("bounds");
-            var min = bounds.get(0).getAsJsonArray();
-            var max = bounds.get(1).getAsJsonArray();
-            var center = o.has("center") ? o.getAsJsonArray("center") : null;
-            int minX = min.get(0).getAsInt(), minY = min.get(1).getAsInt(), maxX = max.get(0).getAsInt();
-            int maxY = max.get(1).getAsInt();
-            int id = o.get("mapId").getAsInt();
-            String name = o.get("name").getAsString();
-            int tiles = o.has("tiles") ? o.get("tiles").getAsInt() : id;
-            if (!inWorld(minX) || !inWorld(minY) || !inWorld(maxX) || !inWorld(maxY) || maxX <= minX || maxY <= minY
-                || id < FULL || name.trim().isEmpty() || name.length() > MAX_NAME
-                || tiles != id && tiles != FULL) {
-                return null;
-            }
-            int centerX = center != null ? center.get(0).getAsInt() : (minX + maxX) / 2;
-            int centerY = center != null ? center.get(1).getAsInt() : (minY + maxY) / 2;
-            if (!inWorld(centerX) || !inWorld(centerY)) {
-                centerX = (minX + maxX) / 2;
-                centerY = (minY + maxY) / 2;
-            }
-            return new BaseMap(id, name, minX, minY, maxX, maxY, centerX, centerY, tiles);
-        } catch (RuntimeException e) {
-            return null;
-        }
-    }
-
-    static boolean inWorld(int coordinate) {
-        return coordinate >= 0 && coordinate <= MAX_COORDINATE;
     }
 
     BaseMap byId(int id) {

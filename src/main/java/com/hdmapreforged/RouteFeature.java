@@ -1,5 +1,6 @@
 package com.hdmapreforged;
 
+import static com.hdmapreforged.PoiType.t;
 import static java.awt.RenderingHints.*;
 import static java.util.Collections.*;
 import static java.util.stream.Collectors.*;
@@ -7,19 +8,21 @@ import static com.hdmapreforged.RouteSource.*;
 import static com.hdmapreforged.Tour.*;
 import static com.hdmapreforged.BankDetour.*;
 import static com.hdmapreforged.Route.Step.Kind.*;
-import static com.hdmapreforged.ShortestPathBridge.*;
+import static com.hdmapreforged.SpBridge.*;
 import static com.hdmapreforged.Tiles.*;
 import static com.hdmapreforged.PlayerMarker.circle;
 import static com.hdmapreforged.RoutePanels.*;
 import static com.hdmapreforged.RouteFeature.RouteText.*;
 import static com.hdmapreforged.SearchResults.*;
-import static com.hdmapreforged.HdMapReforgedConfig.*;
+import static com.hdmapreforged.MapConfig.*;
 import static com.hdmapreforged.Route.Outcome.*;
 import static java.awt.BasicStroke.*;
 import static java.util.Locale.ROOT;
 import static javax.swing.SwingUtilities.invokeLater;
 import static net.runelite.api.gameval.VarbitID.*;
 import static java.lang.Math.*;
+import static java.lang.System.currentTimeMillis;
+import static net.runelite.api.Perspective.*;
 
 import com.hdmapreforged.Route.*;
 import com.hdmapreforged.Route.Step.*;
@@ -68,17 +71,9 @@ public final class RouteFeature implements TourPanel.Actions {
     /** Per account: the house's features ("box:ornate,glory,portal:Varrock") and its plan. */
     static final String HOUSE_KEY = "routeHouse";
     static final String PLAN_KEY = "housePlan";
-    static final int[] BOAT_PORTS = {SAILING_BOAT_1_PORT, SAILING_BOAT_2_PORT,
-        SAILING_BOAT_3_PORT, SAILING_BOAT_4_PORT, SAILING_BOAT_5_PORT};
-    /** The same boats' teleport focus: 0 none, 1 teleport focus, 2 greater (the game's boat spells test 1 and 2). */
-    static final int[] BOAT_FOCUS = {SAILING_BOAT_1_TELEPORT_FOCUS,
-        SAILING_BOAT_2_TELEPORT_FOCUS, SAILING_BOAT_3_TELEPORT_FOCUS,
-        SAILING_BOAT_4_TELEPORT_FOCUS, SAILING_BOAT_5_TELEPORT_FOCUS};
-    static final int[] POUCH_TYPES = {RUNE_POUCH_TYPE_1, RUNE_POUCH_TYPE_2,
-        RUNE_POUCH_TYPE_3, RUNE_POUCH_TYPE_4, RUNE_POUCH_TYPE_5, RUNE_POUCH_TYPE_6};
-    static final int[] POUCH_AMOUNTS = {RUNE_POUCH_QUANTITY_1, RUNE_POUCH_QUANTITY_2,
-        RUNE_POUCH_QUANTITY_3, RUNE_POUCH_QUANTITY_4, RUNE_POUCH_QUANTITY_5,
-        RUNE_POUCH_QUANTITY_6};
+    /** VarbitID's RUNE_POUCH_TYPE_1 to 6 and RUNE_POUCH_QUANTITY_1 to 6 (RouteItemsTest checks them). */
+    static final int[] POUCH_TYPES = {29, 1622, 1623, 14285, 15373, 15374},
+        POUCH_AMOUNTS = {1624, 1625, 1626, 14286, 15375, 15376};
     static final Set<Integer> RUNE_POUCHES = Set.of(12791, 24416, 27281, 27509);
     static final int STATE_TICKS = 3, QUEST_TICKS = 100;
 
@@ -118,9 +113,9 @@ public final class RouteFeature implements TourPanel.Actions {
     }
 
     /** A route tile for HD World Markers; {@code alpha}: how visible (fading); null where it cannot be drawn. */
-    TileMarkersBridge.Tile hdTile(int point, float alpha, Color walk) {
+    MarkersBridge.Tile hdTile(int point, float alpha, Color walk) {
         var at = markerPoint(point);
-        return at == null ? null : new TileMarkersBridge.Tile(at, alpha(walk, tileBorder * alpha),
+        return at == null ? null : new MarkersBridge.Tile(at, alpha(walk, tileBorder * alpha),
             alpha(walk, tileFill * alpha), tileBorder == 0 ? 0 : tileWidth, null);
     }
 
@@ -146,10 +141,10 @@ public final class RouteFeature implements TourPanel.Actions {
     static final Color END = new Color(255, 90, 70);
 
     final Client client;
-    final HdMapReforgedConfig config;
+    final MapConfig config;
     final ConfigManager configManager;
     /** The planted spirit trees grown for this account; read near their patches. */
-    final PlantedSpiritTrees planted = new PlantedSpiritTrees();
+    final Planted planted = new Planted();
     final OverlayManager overlayManager;
     final net.runelite.client.game.ItemManager itemManager;
     final EventBus eventBus;
@@ -161,13 +156,9 @@ public final class RouteFeature implements TourPanel.Actions {
     final FairyRingLog fairyRingLog = new FairyRingLog(this);
     // Nothing on the game's own world map: projecting a long route there every frame is too heavy.
     final List<Overlay> overlays = List.of(new GameOverlay(), new MinimapOverlay(), new ItemsOverlay());
-    final MapView.Overlay mapOverlay = this::paintMap;
-    /** Each map's destination arrow. */
-    final Map<MapView, MapView.Widget> destinations = new ConcurrentHashMap<>();
     /** The Clue Scroll plugin's spots for the clue now (packed) and its icon, as the game's world map shows them. */
     volatile int[] clues = {};
     volatile java.awt.image.BufferedImage clueIcon;
-    final MapView.MenuContributor menu = this::contribute;
 
     volatile ExecutorService searches, background;
     volatile MapScreen[] screens = new MapScreen[0];
@@ -224,7 +215,7 @@ public final class RouteFeature implements TourPanel.Actions {
     /** Whether the current route was asked for by another plugin. */
     volatile boolean fromPlugin;
 
-    boolean shortestPathPlanner() {
+    boolean spPlanner() {
         return config.routePlanner() == RoutePlanner.SHORTEST_PATH;
     }
 
@@ -260,7 +251,7 @@ public final class RouteFeature implements TourPanel.Actions {
     void warnBoth(boolean again) {
         clientThread.invokeLater(() -> {
             warned &= !again;
-            var other = warned || client.getGameState() != GameState.LOGGED_IN || shortestPathPlanner() ? null
+            var other = warned || client.getGameState() != GameState.LOGGED_IN || spPlanner() ? null
                 : shortestPathName();
             if (other == null) {
                 return;
@@ -268,9 +259,7 @@ public final class RouteFeature implements TourPanel.Actions {
             warned = true;
             // RuneLite gives every plugin each message: neither can take another plugin's directions for itself.
             chatMessageManager.queue(QueuedMessage.builder().type(ChatMessageType.CONSOLE)
-                .value("Reimagined World Map: its route planner is on, and so is the " + other + " plugin. Both plan "
-                    + "other plugins' directions and the map draws both routes; pick one (switch " + other + " off, or "
-                    + "set Reimagined World Map's Route planner to Shortest Path).").build());
+                .value(t("warnBoth", other, other)).build());
         });
     }
 
@@ -285,7 +274,7 @@ public final class RouteFeature implements TourPanel.Actions {
     volatile boolean hdTiles;
     boolean hdHome;
     Route[] sentLegs;
-    int lastHdTilesCheck = Integer.MIN_VALUE / 2;
+    int lastHdCheck = Integer.MIN_VALUE / 2;
     /** Volatile: a change of the route's look clears it on Swing, the client thread sends and sets it. */
     volatile Route sentAhead;
     /** The fades as last sent ({@link #fadeSteps}). */
@@ -308,7 +297,7 @@ public final class RouteFeature implements TourPanel.Actions {
     /** Shift + right-click on the ground. RuneLite entries; nothing is sent to the game. */
     @Subscribe
     public void onMenuOpened(MenuOpened event) {
-        if (shortestPathPlanner() || !client.isKeyPressed(KeyCode.KC_SHIFT)) {
+        if (spPlanner() || !client.isKeyPressed(KeyCode.KC_SHIFT)) {
             return;
         }
         var view = client.getTopLevelWorldView();
@@ -347,7 +336,7 @@ public final class RouteFeature implements TourPanel.Actions {
     @Subscribe
     public void onClientTick(ClientTick event) {
         // Also a new cut of the route (a teleport taken: the tick's send ran before it), at the next frame.
-        if (hdTiles && (drawn != sentAhead || fadeSteps(fading, appearing, System.currentTimeMillis()) != sentFade)) {
+        if (hdTiles && (drawn != sentAhead || fadeSteps(fading, appearing, currentTimeMillis()) != sentFade)) {
             updateHdTiles(sentFrom);
         }
     }
@@ -379,7 +368,7 @@ public final class RouteFeature implements TourPanel.Actions {
         sentTiles = false;
         sentLines = false;
         sentHead = null;
-        lastHdTilesCheck = Integer.MIN_VALUE / 2;
+        lastHdCheck = Integer.MIN_VALUE / 2;
     }
 
     /** The text over the head HD World Markers was sent, with its colour; null none. Client thread. */
@@ -390,20 +379,20 @@ public final class RouteFeature implements TourPanel.Actions {
         String now = text == null ? null : text + color;
         if (!Objects.equals(now, sentHead)) {
             sentHead = now;
-            eventBus.post(TileMarkersBridge.head(text, color, player));
+            eventBus.post(MarkersBridge.head(text, color, player));
         }
     }
 
     void updateHdTiles(int player) {
         boolean home = house.own();
-        if (ticks - lastHdTilesCheck >= 10 || home != hdHome) {
+        if (ticks - lastHdCheck >= 10 || home != hdHome) {
             hdHome = home;
-            lastHdTilesCheck = ticks;
+            lastHdCheck = ticks;
             // Also in one's house: its tiles go as the scene's own instance tiles (markerPoint).
-            boolean on = pluginOn(List.of(TileMarkersBridge.PLUGIN_NAME)) != null;
+            boolean on = pluginOn(List.of(MarkersBridge.PLUGIN_NAME)) != null;
             if (!on && hdTiles) {
                 head(null, null, null);
-                eventBus.post(TileMarkersBridge.clear());
+                eventBus.post(MarkersBridge.clear());
                 sentAhead = null;
                 sentTiles = false;
                 sentLines = false;
@@ -415,7 +404,7 @@ public final class RouteFeature implements TourPanel.Actions {
         }
         Route route = drawn;
         // Moved far, or the position became known or unknown; not every tick while it stays unknown (the house).
-        boolean moved = player != sentFrom && (player < 0 || sentFrom < 0 || Tiles.distance(player, sentFrom) > 16);
+        boolean moved = player != sentFrom && (player < 0 || sentFrom < 0 || distance(player, sentFrom) > 16);
         // The scene loaded again (a teleport in, building mode): the house's instance tiles lie elsewhere now.
         var scene = client.getTopLevelWorldView();
         long base = scene == null ? 0 : (long) scene.getBaseX() << 32 | scene.getBaseY() & 0xffffffffL;
@@ -423,7 +412,7 @@ public final class RouteFeature implements TourPanel.Actions {
         sentBase = base;
         Running running = tour;
         var legs = running == null ? null : running.legs;
-        long now = System.currentTimeMillis(), fade = fadeSteps(fading, appearing, now);
+        long now = currentTimeMillis(), fade = fadeSteps(fading, appearing, now);
         // Fading alone sends again at most once a fade step (each tile's own steps would send several times a second,
         // the whole list each time).
         if (route == sentAhead && legs == sentLegs && !moved
@@ -438,7 +427,7 @@ public final class RouteFeature implements TourPanel.Actions {
         var later = laterLegs();
         if (route == null && fading.isEmpty() && later.isEmpty()) {
             if (sentTiles) {
-                eventBus.post(TileMarkersBridge.clear());
+                eventBus.post(MarkersBridge.clear());
             }
             sentTiles = false;
             sentLines = false;
@@ -472,7 +461,7 @@ public final class RouteFeature implements TourPanel.Actions {
             });
             // The pieces fading behind the player: an arrow passed keeps its own (one on its first tile).
             Color walked = current();
-            eachFadingPiece(route, now, (piece, alpha) -> {
+            eachFade(route, now, (piece, alpha) -> {
                 var a = markerPoint(piece[0]);
                 var b = markerPoint(piece[1]);
                 if (a != null && b != null) {
@@ -483,10 +472,10 @@ public final class RouteFeature implements TourPanel.Actions {
             });
         }
         if (asLines || sentLines) {
-            eventBus.post(TileMarkersBridge.lines(lines, lineColors, lineArrows, config.routeLineWidth()));
+            eventBus.post(MarkersBridge.lines(lines, lineColors, lineArrows, config.routeLineWidth()));
             sentLines = asLines;
         }
-        var tiles = new ArrayList<TileMarkersBridge.Tile>();
+        var tiles = new ArrayList<MarkersBridge.Tile>();
         var taken = new HashSet<Integer>();
         int blocked = blockedFrom(route);
         var steps = route == null ? List.<Step>of() : route.steps;
@@ -505,7 +494,7 @@ public final class RouteFeature implements TourPanel.Actions {
                 int at = namedAt(step);
                 var marked = reach(at, player) ? markerPoint(at) : null;
                 if (marked != null) {
-                    tiles.add(new TileMarkersBridge.Tile(marked, cannot ? CANNOT : jump(),
+                    tiles.add(new MarkersBridge.Tile(marked, cannot ? CANNOT : jump(),
                         said(whole(route), step, false)));
                 }
             }
@@ -528,12 +517,12 @@ public final class RouteFeature implements TourPanel.Actions {
             });
         }
         tiles.removeIf(Objects::isNull);
-        eventBus.post(TileMarkersBridge.tiles(tiles));
+        eventBus.post(MarkersBridge.tiles(tiles));
         sentTiles = true;
     }
 
     static boolean reach(int point, int player) {
-        return player < 0 || Tiles.distance(point, player) <= MARKER_REACH;
+        return player < 0 || distance(point, player) <= MARKER_REACH;
     }
 
     /** The last message we sent Shortest Path, not taken for another plugin's. */
@@ -547,31 +536,29 @@ public final class RouteFeature implements TourPanel.Actions {
     @Subscribe(priority = -1)
     public void onPluginMessage(PluginMessage message) {
         if (is(message, "transports") && handedOver != null) {
-            spJumps = ShortestPathBridge.jumps(message);
+            spJumps = SpBridge.jumps(message);
             walkShortestPath(spJumps, handedOver);
-            invokeLater(() -> showShortestPath(false));
+            invokeLater(() -> showSp(false));
             return;
         }
         boolean path = is(message, "path");
-        List<WorldPoint> targets = path ? ShortestPathBridge.targets(message) : List.of();
-        var target = ShortestPathBridge.nearest(targets, lastLocation);
+        List<WorldPoint> targets = path ? SpBridge.targets(message) : List.of();
+        var target = SpBridge.nearest(targets, lastLocation);
         if (message == sent || (path ? target == null : !is(message, "clear"))) {
             return;
         }
         var other = shortestPathName();
-        log.debug("Directions from another plugin: {} {} (nearest {}), {} on, planner {}, follow {}",
-            message.getName(), targets, target, other, config.routePlanner(), config.routeFollowPlugins());
         directions = path ? message : null;
         if (target == null && handedOver != null) {
             forgetHandOver();
-            invokeLater(() -> showShortestPath(false));
+            invokeLater(() -> showSp(false));
         } else if (target != null && other != null) {
-            handOver(target, ShortestPathBridge.path(null, ShortestPathBridge.config(message)), false);
+            handOver(target, SpBridge.path(null, SpBridge.config(message)), false);
         }
-        if (shortestPathPlanner() || !config.routeFollowPlugins()) {
+        if (spPlanner() || !config.routeFollowPlugins()) {
             return;
         }
-        var wilderness = path ? avoidWilderness(message) : null;
+        var wilderness = path ? noWild(message) : null;
         invokeLater(() -> follow(targets, wilderness));
     }
 
@@ -594,7 +581,6 @@ public final class RouteFeature implements TourPanel.Actions {
         int asked = pluginAsked.incrementAndGet();
         if (c != null && !targets.isEmpty()) {
             fastest(targets, true, () -> pluginAsked.get() != asked || controller != c, wilderness, best -> {
-                log.debug("Following another plugin's directions to {}", best);
                 // A new place shows its steps on the open map, as one asked for here does.
                 bringUp = c.target() != pack(best);
                 fromPlugin = true;
@@ -614,16 +600,16 @@ public final class RouteFeature implements TourPanel.Actions {
      */
     void followAgain() {
         var last = directions;
-        List<WorldPoint> targets = last == null ? List.of() : ShortestPathBridge.targets(last);
+        List<WorldPoint> targets = last == null ? List.of() : SpBridge.targets(last);
         if (targets.isEmpty()) {
             return;
         }
-        if (shortestPathPlanner()) {
+        if (spPlanner()) {
             if (shortestPathOn()) {
-                handOver(ShortestPathBridge.nearest(targets, lastLocation), ShortestPathBridge.again(last), false);
+                handOver(SpBridge.nearest(targets, lastLocation), SpBridge.again(last), false);
             }
         } else if (config.routeFollowPlugins()) {
-            follow(targets, avoidWilderness(last));
+            follow(targets, noWild(last));
         }
     }
 
@@ -631,12 +617,12 @@ public final class RouteFeature implements TourPanel.Actions {
     volatile List<WorldPoint> followed = List.of();
     /** Which plugin's directions are current; an older look for their fastest target stops. */
     final AtomicInteger pluginAsked = new AtomicInteger();
-    /** The avoidWilderness the plugin's directions gave, used while the route is theirs ({@link #fromPlugin}); null none. */
+    /** The noWild the plugin's directions gave, used while the route is theirs ({@link #fromPlugin}); null none. */
     volatile Boolean pluginWilderness;
 
     /** As the planner, Shortest Path's route has the card; else it is only drawn, under ours. */
-    void showShortestPath(boolean up) {
-        if (shortestPathPlanner()) {
+    void showSp(boolean up) {
+        if (spPlanner()) {
             showHandedOver(handedOver == null ? null : this::handedOverPanel, up);
         } else {
             repaint();
@@ -695,7 +681,6 @@ public final class RouteFeature implements TourPanel.Actions {
                         way.steps.stream().filter(s -> s.kind == Kind.WALK).forEach(s -> walks.add(s.points));
                     }
                 } catch (RuntimeException e) {
-                    log.debug("No walk found for Shortest Path's route", e);
                 }
             }
             if (asked == spAsked.get()) {
@@ -721,7 +706,7 @@ public final class RouteFeature implements TourPanel.Actions {
         g.setRenderingHint(KEY_ANTIALIASING, VALUE_ANTIALIAS_ON);
         float[] jump = {9f, 6f};
         // Beside our route (both planners on): white and dashed, to tell the two apart.
-        boolean beside = !shortestPathPlanner();
+        boolean beside = !spPlanner();
         Color walked = beside ? Color.WHITE : PlayerMarker.YELLOW;
         // Its teleports and transports as it told them, and the walks between them as found here on foot.
         for (var walk : spWalks) {
@@ -765,11 +750,7 @@ public final class RouteFeature implements TourPanel.Actions {
         var name = shortestPathName();
         boolean on = name != null;
         panel.add(label("Route by " + (on ? name : "Shortest Path"), width, Font.BOLD, Color.WHITE));
-        panel.add(label(on ? "Planned by " + name + ", which draws it in the game. On this map: the teleports and "
-            + "transports it takes, and the walks between them as found here on foot."
-            : "Neither the Shortest Path nor the GPS plugin is on. Install or switch one on, or set Route planner "
-                + "to Reimagined World Map.",
-            width, on ? ColorScheme.LIGHT_GRAY_COLOR : NOTE));
+        panel.add(label(on ? t("spPlanned", name) : t("spOff"), width, on ? ColorScheme.LIGHT_GRAY_COLOR : NOTE));
         int number = 1;
         for (var j : spJumps) {
             panel.add(label(number++ + ". " + j.name, width, new Color(200, 170, 255)));
@@ -784,14 +765,14 @@ public final class RouteFeature implements TourPanel.Actions {
         handedOver = target;
         // Shortest Path reads the player's position when a message arrives: client thread.
         clientThread.invokeLater(() -> eventBus.post(sent = ask));
-        invokeLater(() -> showShortestPath(up));
+        invokeLater(() -> showSp(up));
     }
 
     /** Shortest Path plans it as the planner (true), or also when both are on: drawn under ours, to compare. */
-    boolean toShortestPath(WorldPoint target) {
-        boolean planner = shortestPathPlanner();
+    boolean toSp(WorldPoint target) {
+        boolean planner = spPlanner();
         if (planner || shortestPathOn()) {
-            handOver(target, ShortestPathBridge.path(target, Map.of()), true);
+            handOver(target, SpBridge.path(target, Map.of()), true);
         }
         return planner;
     }
@@ -804,7 +785,7 @@ public final class RouteFeature implements TourPanel.Actions {
     void handOverClear() {
         forgetHandOver();
         clientThread.invokeLater(() -> eventBus.post(sent = clear()));
-        showShortestPath(false);
+        showSp(false);
     }
 
     void forgetHandOver() {
@@ -823,11 +804,10 @@ public final class RouteFeature implements TourPanel.Actions {
         background = Executors.newSingleThreadExecutor(HdMapReforgedPlugin.threads("Reimagined World Map route extras",
             Thread.MIN_PRIORITY));
         for (var screen : on) {
-            screen.view.addOverlay(mapOverlay);
-            MapView.Widget arrow = (g, w, h, bottom, clicks) -> paintDestination(screen.view, g, clicks);
-            destinations.put(screen.view, arrow);
-            screen.view.addWidget(arrow);
-            screen.view.menuContributors.add(menu);
+            screen.view.addOverlay(this::paintMap);
+            // The destination's arrow.
+            screen.view.addWidget((g, w, h, bottom, clicks) -> paintDestination(screen.view, g, clicks));
+            screen.view.menus.add(this::contribute);
             screen.card.setRouter(this::routeTo);
             screen.setStopAdder(this::addStop);
             // Of these places the map shows the one the planner gets to soonest (with the player's teleports and
@@ -835,7 +815,7 @@ public final class RouteFeature implements TourPanel.Actions {
             // maps show the place, as a click on it in the list does.
             screen.npcs.setFastest(places -> {
                 int asked = fastestAsked.incrementAndGet();
-                fastest(places, !shortestPathPlanner(), () -> fastestAsked.get() != asked, null,
+                fastest(places, !spPlanner(), () -> fastestAsked.get() != asked, null,
                     place -> forScreens(each -> each.npcs.lookAtPoint(place)));
             });
             screen.setTours(this);
@@ -908,6 +888,7 @@ public final class RouteFeature implements TourPanel.Actions {
     /** Counts starts and stops, so a load finishing after a stop is dropped. */
     final AtomicInteger loads = new AtomicInteger();
 
+    /** The plugin makes a new RouteFeature for each start: only what reaches outside it is undone here. */
     void stop() {
         loads.incrementAndGet();
         eventBus.unregister(this);
@@ -916,33 +897,18 @@ public final class RouteFeature implements TourPanel.Actions {
         overlays.forEach(overlayManager::remove);
         fadeTimer.stop();
         itemReroute.stop();
-        fading.clear();
-        gone.clear();
-        appearing.clear();
         if (hdTiles) {
             hdTiles = false;
             clientThread.invokeLater(() -> {
                 head(null, null, null);
-                eventBus.post(TileMarkersBridge.clear());
+                eventBus.post(MarkersBridge.clear());
             });
         }
-        for (var screen : screens) {
-            screen.view.removeOverlay(mapOverlay);
-            screen.view.removeWidget(destinations.remove(screen.view));
-            screen.view.menuContributors.remove(menu);
-            screen.showRoute(null, false);
-            screen.view.areaBounds = p -> null; // holds the collision map
-            screen.view.ground = null;
-        }
-        sidebar.accept(null);
-        sidebar = section -> { };
-        sidebarFocus = point -> { };
-        sidebarTours = () -> { };
-        sidebarNow = null;
         var running = controller;
         if (running != null) {
             running.clear();
         }
+        // Work still on its threads finds it is not wanted.
         controller = null;
         for (var pool : new ExecutorService[]{searches, background}) {
             if (pool != null) {
@@ -951,52 +917,17 @@ public final class RouteFeature implements TourPanel.Actions {
         }
         searches = null;
         background = null;
+        fastestAsked.incrementAndGet();
+        spAsked.incrementAndGet();
+        // The plugin keeps this until its next start: not the collision map, the planner or the screens.
         screens = new MapScreen[0];
-        show(null);
         source = null;
         walker = null;
         yourHouse.setCollision(null);
-        ports = Map.of();
-        // Client thread state: reset there, before any start's own work there.
-        clientThread.invokeLater(() -> {
-            yourHouse.forget();
-            lastLocation = null;
-            start = -2;
-            state = PlayerState.UNKNOWN;
-            unsent();
-            sentFade = 1;
-            warned = false;
-        });
-        // Work still on the extras thread finds it is not wanted.
-        tour = null;
-        orders.incrementAndGet();
         if (handedOver != null) {
             // Else Shortest Path keeps drawing it, with no Clear path here after a restart.
             clientThread.invokeLater(() -> eventBus.post(clear()));
         }
-        forgetHandOver();
-        fastestAsked.incrementAndGet();
-        whyAsked.incrementAndGet();
-        why = null;
-        whyFor = null;
-        whyTarget = -1;
-        explaining = false;
-        tipAsked.incrementAndGet();
-        tip = null;
-        tipShown = false;
-        tipFor = null;
-        tipTarget = -1;
-        ahead = null;
-        aheadOf = null;
-        aheadWalked = null;
-        routeAvoid.clear();
-        aheadWalkedOf = null;
-        lastAheadSteps = -1;
-        lastAheadPoints = -1;
-        bringUp = false;
-        fromPlugin = false;
-        pluginAsked.incrementAndGet();
-        directions = null;
     }
 
     // ---- client thread ----
@@ -1051,7 +982,7 @@ public final class RouteFeature implements TourPanel.Actions {
         int node = location == null ? -1 : pack(location);
         // By a planted spirit tree's patch: whether a grown tree stands there now, kept for this account.
         if (location != null && planted.update(location.getRegionID(), client::getVarbitValue)) {
-            configManager.setRSProfileConfiguration(GROUP, PlantedSpiritTrees.KEY, planted.text());
+            configManager.setRSProfileConfiguration(GROUP, Planted.KEY, planted.text());
             invokeLater(this::settingsChanged);
         }
         house.update(node, instance, client.getVarbitValue(POH_HOUSE_LOCATION),
@@ -1140,7 +1071,7 @@ public final class RouteFeature implements TourPanel.Actions {
         if (tiles.isEmpty() || tiles.size() > 1000) {
             return;
         }
-        long t = System.currentTimeMillis();
+        long t = currentTimeMillis();
         for (int point : tiles) {
             // Only one fading out a moment ago (walked back) comes back from where it was; a new tile is there at once.
             Long out = fading.remove(point);
@@ -1157,7 +1088,7 @@ public final class RouteFeature implements TourPanel.Actions {
     }
 
     void fadeStep() {
-        long now = System.currentTimeMillis();
+        long now = currentTimeMillis();
         // Tiles fade all the while a route is walked: a map paints again only round the dots it shows, not whole.
         for (var screen : screens) {
             Rectangle dots = screen.view.isShowing() ? fadingDots(screen.view.projection(), fading.keySet()) : null;
@@ -1215,7 +1146,7 @@ public final class RouteFeature implements TourPanel.Actions {
     }
 
     void fadeOut(Set<Integer> tiles) {
-        long t = System.currentTimeMillis();
+        long t = currentTimeMillis();
         if (tiles.isEmpty() || tiles.size() > 1000) {
             return;
         }
@@ -1251,7 +1182,7 @@ public final class RouteFeature implements TourPanel.Actions {
         var walkedBefore = walkedAhead(before);
         var walkedNow = now == before ? walkedBefore : walked(now);
         if (route != null && route == aheadOf && before != null && now != null && player >= 0 && !isSea(player)
-            && !now.steps.isEmpty() && jumps(now) >= jumps(before) && Tiles.distance(player, now.steps.get(0).first()) > 2) {
+            && !now.steps.isEmpty() && jumps(now) >= jumps(before) && distance(player, now.steps.get(0).first()) > 2) {
             // Off the way: the route stays as it was, nothing passed (walking away beside it is not walking it) and
             // nothing back, until the player is on it again or a new search's route fades in. A teleport or
             // transport just taken is passed, wherever it put the player.
@@ -1323,10 +1254,11 @@ public final class RouteFeature implements TourPanel.Actions {
         }
         // Where each boat lies and its teleport focus; boats at one port count once, with the best focus there.
         var boats = new LinkedHashMap<Integer, Integer>();
-        for (int i = 0; i < BOAT_PORTS.length; i++) {
-            Integer tile = ports.get(client.getVarbitValue(BOAT_PORTS[i]));
+        // The five boats' varbits lie 38 apart, each boat's teleport focus (0 none, 1, 2 greater) 10 after its port.
+        for (int port = SAILING_BOAT_1_PORT; port <= SAILING_BOAT_5_PORT; port += 38) {
+            Integer tile = ports.get(client.getVarbitValue(port));
             if (tile != null) {
-                boats.merge(tile, client.getVarbitValue(BOAT_FOCUS[i]), Math::max);
+                boats.merge(tile, client.getVarbitValue(port + 10), Math::max);
             }
         }
         return new PlayerState(ItemSnapshot.of(carried, unlimited), client.getRealSkillLevel(Skill.SAILING),
@@ -1533,7 +1465,7 @@ public final class RouteFeature implements TourPanel.Actions {
                 if (c != null && c.target() >= 0) {
                     c.clear();
                 }
-                if (handedOver != null && !shortestPathPlanner()) {
+                if (handedOver != null && !spPlanner()) {
                     handOverClear();
                 }
                 if (handedOver != null) {
@@ -1584,7 +1516,7 @@ public final class RouteFeature implements TourPanel.Actions {
     }
 
     /**
-     * For {@code player} (the player with their bank's items); {@code wilderness}: another plugin's avoidWilderness for
+     * For {@code player} (the player with their bank's items); {@code wilderness}: another plugin's noWild for
      * its directions, null for the setting.
      */
     RouteRequest request(int begin, int target, boolean anything, boolean everyItem, List<String> leftOut,
@@ -1665,12 +1597,18 @@ public final class RouteFeature implements TourPanel.Actions {
 
     /** The bank as seen (item id to amount), kept for this account when what routes may need in it changed. Client thread. */
     void rememberBank(Map<Integer, Long> bank) {
+        var on = screens;
+        if (routeItemIds == null && on.length > 0 && !on[0].view.pois().isEmpty()) {
+            nameItems(on[0].view.pois());
+        }
+        var wanted = routeItemIds;
+        // Before the places are read what routes need is not known: the bank kept stays.
+        if (wanted == null) {
+            return;
+        }
         var items = new TreeMap<>(bank);
         items.values().removeIf(n -> n <= 0);
-        var wanted = routeItemIds;
-        if (wanted != null) {
-            items.keySet().removeIf(id -> !wanted.contains(id) && !RUNE_POUCHES.contains(id));
-        }
+        items.keySet().removeIf(id -> !wanted.contains(id) && !RUNE_POUCHES.contains(id));
         if (items.equals(bankItems) || configManager.getRSProfileKey() == null) {
             return;
         }
@@ -1839,7 +1777,7 @@ public final class RouteFeature implements TourPanel.Actions {
     /** Swing thread; nothing while the data loads. */
     void routeTo(WorldPoint point) {
         stopTour();
-        if (toShortestPath(point)) {
+        if (toSp(point)) {
             return;
         }
         var now = controller;
@@ -1860,7 +1798,7 @@ public final class RouteFeature implements TourPanel.Actions {
      */
     boolean atSea(WorldPoint point) {
         int at = pack(point);
-        return point.getPlane() == 0 && (Arrays.stream(seaSpots).anyMatch(spot -> Tiles.distance(spot, at) <= 2)
+        return point.getPlane() == 0 && (Arrays.stream(seaSpots).anyMatch(spot -> distance(spot, at) <= 2)
             || screens.length > 0 && screens[0].view.pois().stream()
             .anyMatch(poi -> poi.atSea() && poi.location.getPlane() == 0 && poi.location.distanceTo2D(point) <= 2));
     }
@@ -1878,13 +1816,11 @@ public final class RouteFeature implements TourPanel.Actions {
         var c = controller;
         popup.addSeparator();
         item(popup, "Add to custom route", () -> addStop(Stop.place(placeName(point), point)))
-            .setToolTipText("Adds this spot as a stop of \"" + editingName() + "\"");
-        item(popup, "Custom routes...", () -> forScreens(MapScreen::openTours))
-            .setToolTipText("Your own routes with several stops: order them, let the planner find the fastest order, run");
-        item(popup, "Your house...", yourHouse::openHouse)
-            .setToolTipText("What your house has for routes (this account), and its plan once you have been in it");
-        boolean theirs = shortestPathPlanner();
-        item(popup, theirs ? "Path to here (Shortest Path)" : c == null ? "Path to here (loading…)" : "Path to here",
+            .setToolTipText(t("addStopTip", editingName()));
+        item(popup, "Custom routes...", () -> forScreens(MapScreen::openTours)).setToolTipText(t("toursTip"));
+        item(popup, "Your house...", yourHouse::openHouse).setToolTipText(t("houseTip"));
+        boolean theirs = spPlanner();
+        item(popup, theirs ? t("rfPathSp") : c == null ? t("rfPathLoading") : "Path to here",
             () -> routeTo(point)).setEnabled(theirs || c != null);
         if (handedOver != null || c != null && c.target() >= 0) {
             item(popup, tour != null ? "Stop custom route" : "Clear path", this::clearRoute);
@@ -1936,19 +1872,18 @@ public final class RouteFeature implements TourPanel.Actions {
         var all = tours();
         Tour saved = all.stream().filter(t -> t.name.equals(r.tour.name)).findFirst().orElse(null);
         if (saved == null || saved.avoid.size() >= MAX_AVOIDED) {
-            toast(saved == null ? "\"" + r.tour.name + "\" is no longer saved" : "\"" + r.tour.name + "\" leaves out "
-                + MAX_AVOIDED + " ways already, as many as a route can");
+            toast(saved == null ? t("tourGone", r.tour.name) : t("avoidFull", r.tour.name, MAX_AVOIDED));
             return;
         }
         saved.avoid.add(name);
         r.avoid = new ArrayList<>(saved.avoid);
         saveTours(all, editingName());
-        toast("\"" + r.tour.name + "\" now leaves out " + Tour.describe(name).toLowerCase(ROOT));
+        toast(t("avoided", r.tour.name, Tour.describe(name).toLowerCase(ROOT)));
         settingsChanged();
         r.legs = new Route[r.points.length];
         r.plan++;
         planLegs(r);
-        refreshTours();
+        redoTours();
     }
 
     public List<Tour> tours() {
@@ -1973,15 +1908,14 @@ public final class RouteFeature implements TourPanel.Actions {
         String name = editingName();
         Tour target = Tour.named(tours, name);
         if (target.stops.size() >= MAX_STOPS) {
-            JOptionPane.showMessageDialog(screens.length > 0 ? screens[0] : null, "\"" + name + "\" has "
-                + MAX_STOPS + " stops, as many as a route can have. Make another route under Custom routes.",
+            JOptionPane.showMessageDialog(screens.length > 0 ? screens[0] : null, t("stopsFull", name, MAX_STOPS),
                 "Custom routes", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
         target.stops.add(stop);
         saveTours(tours, name);
-        refreshTours();
-        toast("Added to \"" + name + "\" (" + target.stops.size() + " stops)");
+        redoTours();
+        toast(t("stopAdded", name, target.stops.size()));
     }
 
     String placeName(WorldPoint point) {
@@ -2001,15 +1935,15 @@ public final class RouteFeature implements TourPanel.Actions {
 
     public void save(List<Tour> tours, String editing) {
         saveTours(tours, editing);
-        refreshTours();
+        redoTours();
     }
 
     public void cancelOrder() {
         orders.incrementAndGet();
     }
 
-    void refreshTours() {
-        forScreens(MapScreen::refreshTours);
+    void redoTours() {
+        forScreens(MapScreen::redoTours);
         sidebarTours.run();
     }
 
@@ -2026,14 +1960,14 @@ public final class RouteFeature implements TourPanel.Actions {
         running.legs = new Route[at.size()];
         goToStop(start);
         planLegs(running);
-        refreshTours();
+        redoTours();
     }
 
     /** Plans every leg in the background, so the whole route is drawn at once. */
     void planLegs(Running running) {
         var work = background;
         Pathfinder pf = walker;
-        if (work == null || pf == null || shortestPathPlanner()) {
+        if (work == null || pf == null || spPlanner()) {
             return;
         }
         int plan = running.plan;
@@ -2120,7 +2054,7 @@ public final class RouteFeature implements TourPanel.Actions {
     void stopTour() {
         if (tour != null) {
             tour = null;
-            refreshTours();
+            redoTours();
         }
     }
 
@@ -2168,7 +2102,7 @@ public final class RouteFeature implements TourPanel.Actions {
         }
         running.skipped = 0;
         running.target = pack(to);
-        if (toShortestPath(to)) {
+        if (toSp(to)) {
             return;
         }
         newRoute();
@@ -2240,8 +2174,7 @@ public final class RouteFeature implements TourPanel.Actions {
         points.add(me);
         points.addAll(resolve(stops, me));
         var leftOut = new ArrayList<String>(chosen.avoid);
-        toast("Working out the fastest order of " + stops.size() + " stops"
-            + (everything ? " with everything in the game…" : "…"));
+        toast(t(everything ? "orderingAll" : "ordering", stops.size()));
         BooleanSupplier cancelled = () -> background == null || orders.get() != order;
         try {
             work.execute(() -> {
@@ -2284,7 +2217,7 @@ public final class RouteFeature implements TourPanel.Actions {
                                 applyOrder(name, stops, result);
                             } else if (orders.get() != order) {
                                 // Another panel's order or a cancel: said, not dropped without a word.
-                                toast("Stopped working out the fastest order of \"" + name + "\"");
+                                toast(t("orderStopped", name));
                             }
                         } finally {
                             done.run();
@@ -2309,7 +2242,7 @@ public final class RouteFeature implements TourPanel.Actions {
             if (was.size() != stops.size() || !IntStream.range(0, was.size())
                 .allMatch(at -> was.get(at).same(stops.get(at)) && was.get(at).name.equals(stops.get(at).name)
                 && was.get(at).locked == stops.get(at).locked)) {
-                toast("\"" + name + "\" changed meanwhile: its order was left as it is");
+                toast(t("orderChanged", name));
                 return;
             }
             var sorted = new ArrayList<Stop>();
@@ -2322,7 +2255,7 @@ public final class RouteFeature implements TourPanel.Actions {
             saveTours(all, editingName());
             return;
         }
-        toast("\"" + name + "\" was renamed or removed meanwhile: its order was not saved");
+        toast(t("orderLost", name));
     }
 
     /** Which fastest-order run is current; any other stops and keeps nothing. */
@@ -2356,7 +2289,7 @@ public final class RouteFeature implements TourPanel.Actions {
     }
 
     /** Even with every requirement met there is no way: the data lacks a passage. */
-    static final String NO_WAY = "No way found, even with everything.";
+    static final String NO_WAY = t("rfNoWay");
 
     /** Swing thread: for an unreachable target, the way with every requirement met. */
     Route why;
@@ -2551,11 +2484,11 @@ public final class RouteFeature implements TourPanel.Actions {
         // Or the way anyone could go gets closer than the player's.
         return route != null && route.outcome == NEAREST && route == whyFor && way != null
             && (way.outcome == FOUND || way.outcome == NEAREST && way.end >= 0 && !way.steps.isEmpty()
-            && (route.end < 0 || route.steps.isEmpty() || distance(way.end, way.target) < distance(route.end, route.target)));
+            && (route.end < 0 || route.steps.isEmpty() || apart(way.end, way.target) < apart(route.end, route.target)));
     }
 
-    static int distance(int from, int to) {
-        return Tiles.distance(from, to) + (z(from) == z(to) ? 0 : 32);
+    static int apart(int from, int to) {
+        return distance(from, to) + (z(from) == z(to) ? 0 : 32);
     }
 
     void changed() {
@@ -2575,7 +2508,7 @@ public final class RouteFeature implements TourPanel.Actions {
                 var now = walkedAhead(ahead);
                 if (ahead == null && lines()) {
                     // Gone as a whole: its lines fade as they were.
-                    long t = System.currentTimeMillis();
+                    long t = currentTimeMillis();
                     before.steps.stream().filter(s -> s.kind == Kind.WALK)
                         .forEach(s -> gone.add(new Gone(s.points, current(), t)));
                     // Also with nothing else fading (a route that started with a teleport): the timer clears them.
@@ -2645,8 +2578,7 @@ public final class RouteFeature implements TourPanel.Actions {
     /** With {@code roomy} (the sidebar): first a box with what to do now and next. */
     JComponent steps(RouteController c, int width, Consumer<WorldPoint> focus, boolean roomy) {
         Route route = effective(c);
-        String status = route == null && explaining ? "Cannot get there with what you have; looking for the way there…"
-            : c.status();
+        String status = route == null && explaining ? t("explaining") : c.status();
         Route left = ahead;
         int done = route != null && route == aheadOf && left != null ? route.steps.size() - left.steps.size() : 0;
         var panel = panel(route, c.target(), status, width, focus, this::clearRoute, this, current(),
@@ -2660,14 +2592,13 @@ public final class RouteFeature implements TourPanel.Actions {
             panel.add(tourHeader(running, width), 0);
         }
         if (handedOver != null) {
-            panel.add(label("Dashed white on the map: Shortest Path's route", width,
-                ColorScheme.MEDIUM_GRAY_COLOR), 1);
+            panel.add(label(t("spDashed"), width, ColorScheme.MEDIUM_GRAY_COLOR), 1);
         }
         var planned = state;
         if (route != null && route.has(Kind.SAIL) && planned != null) {
             // So a wrong dock choice can be told apart from a wrong level.
             String text = config.routeIgnoreLevels() ? "Planned ignoring levels"
-                : "Planned for Sailing level " + planned.sailingLevel;
+                : t("rfSailing", planned.sailingLevel);
             panel.add(label(text, width, ColorScheme.MEDIUM_GRAY_COLOR), 1);
         }
         Tip hint = tip;
@@ -2684,7 +2615,7 @@ public final class RouteFeature implements TourPanel.Actions {
             yourHouse.paintHouse(g, p);
         }
         paintHandedOver(g, p);
-        if (shortestPathPlanner()) {
+        if (spPlanner()) {
             return;
         }
         Route route = ahead;
@@ -2697,7 +2628,7 @@ public final class RouteFeature implements TourPanel.Actions {
         if (route != null) {
             paint(g, p, route, current(), jump());
         }
-        long now = System.currentTimeMillis();
+        long now = currentTimeMillis();
         for (var entry : fading.entrySet()) {
             int point = entry.getKey();
             float alpha = fadeAlpha(entry.getValue(), now);
@@ -2719,7 +2650,7 @@ public final class RouteFeature implements TourPanel.Actions {
         var handed = handedOver;
         var c = controller;
         Route route = ahead;
-        int to = shortestPathPlanner() ? handed == null ? -1 : pack(handed)
+        int to = spPlanner() ? handed == null ? -1 : pack(handed)
             : route != null && route.end >= 0 ? route.end : c == null ? -1 : c.target();
         // The clue's spots with the Clue Scroll plugin's icon, at the view's edge when out of it; one the route ends by
         // stands for the destination's arrow.
@@ -2732,7 +2663,7 @@ public final class RouteFeature implements TourPanel.Actions {
                 int w = icon.getWidth(), h = icon.getHeight();
                 g.drawImage(icon, (int) spot.getX() - w / 2, (int) spot.getY() - h / 2, null);
                 clicks.add(new RoundRectangle2D.Double(spot.getX() - w / 2, spot.getY() - h / 2, w, h, 8, 8),
-                    () -> view.focus(point), "Clue step: click to show it");
+                    () -> view.focus(point), t("rfClue"));
             }
         }
         int at = to;
@@ -2763,7 +2694,7 @@ public final class RouteFeature implements TourPanel.Actions {
         var point = worldPoint(to);
         double r = 13 * DESTINATION_SCALE;
         clicks.add(new RoundRectangle2D.Double(x - r, y - r, 2 * r, 2 * r, 8, 8), () -> view.focus(point),
-            "Destination: click to show it");
+            t("rfDestination"));
     }
 
     /** Whether a step is named on its tile in the game: not a teleport, which is cast anywhere (said over the head). */
@@ -2783,7 +2714,7 @@ public final class RouteFeature implements TourPanel.Actions {
             if (step.kind != Kind.WALK) {
                 return step.kind == TELEPORT || step.kind == Kind.HOUSE || step.kind != Kind.SAIL
                     && step.kind != DISEMBARK && player >= 0 && step.first() >= 0
-                    && Tiles.distance(player, step.first()) <= 3 ? step : null;
+                    && distance(player, step.first()) <= 3 ? step : null;
             }
             if (step.points.length > 3) {
                 return null;
@@ -2858,12 +2789,9 @@ public final class RouteFeature implements TourPanel.Actions {
     void tag(Graphics2D g, LocalPoint at, String text, Color color, int height) {
         // The font first: the text is centred with it.
         g.setFont(FontManager.getRunescapeSmallFont());
-        Point spot = at == null ? null : Perspective.getCanvasTextLocation(client, g, at, text, height);
+        Point spot = at == null ? null : getCanvasTextLocation(client, g, at, text, height);
         if (spot != null) {
-            g.setColor(Color.BLACK);
-            g.drawString(text, spot.getX() + 1, spot.getY() + 1);
-            g.setColor(color);
-            g.drawString(text, spot.getX(), spot.getY());
+            TextSprites.shadowed(g, text, spot.getX(), spot.getY(), color);
         }
     }
 
@@ -2904,23 +2832,23 @@ public final class RouteFeature implements TourPanel.Actions {
         for (var leg : laterLegs()) {
             Color color = legColor(leg.getKey());
             eachWalked(leg.getValue(), point -> {
-                if (Tiles.distance(point, me) <= reach) {
+                if (distance(point, me) <= reach) {
                     sink.tile(point, color, 1);
                 }
             });
         }
         Color normal = current();
-        long now = System.currentTimeMillis();
+        long now = currentTimeMillis();
         eachWalk(route, normal, (points, walk) -> {
             for (int point : points) {
-                if (Tiles.distance(point, me) <= reach && !fading.containsKey(point)) {
+                if (distance(point, me) <= reach && !fading.containsKey(point)) {
                     sink.tile(point, walk, fadeIn(point, now));
                 }
             }
         });
         for (var entry : fading.entrySet()) {
             float alpha = fadeAlpha(entry.getValue(), now);
-            if (alpha > 0 && Tiles.distance(entry.getKey(), me) <= reach) {
+            if (alpha > 0 && distance(entry.getKey(), me) <= reach) {
                 sink.tile(entry.getKey(), normal, alpha);
             }
         }
@@ -2940,7 +2868,7 @@ public final class RouteFeature implements TourPanel.Actions {
             }
         }
         eachWalk(route, current(), sink);
-        long now = System.currentTimeMillis();
+        long now = currentTimeMillis();
         for (var line : gone) {
             float alpha = fadeAlpha(line.since, now);
             if (alpha > 0.02f) {
@@ -2974,7 +2902,7 @@ public final class RouteFeature implements TourPanel.Actions {
      * The passed tiles still fading, as pieces of line: between two of them next to each other, and from one to the
      * route's first tile; with how visible each is (the fainter end's), as tiles fade.
      */
-    void eachFadingPiece(Route route, long now, BiConsumer<int[], Float> sink) {
+    void eachFade(Route route, long now, BiConsumer<int[], Float> sink) {
         markArrows(route);
         Step walk = route == null ? null : route.first(Kind.WALK);
         int first = walk == null ? -1 : walk.first();
@@ -3049,7 +2977,7 @@ public final class RouteFeature implements TourPanel.Actions {
             for (int i = 0; i < points.length; i++) {
                 int point = points[i];
                 Point at = canvas(view, point, plane, me);
-                if (at != null && previous >= 0 && Tiles.distance(previous, point) == 1) {
+                if (at != null && previous >= 0 && distance(previous, point) == 1) {
                     path.lineTo(at.getX(), at.getY());
                 } else if (at != null) {
                     path.moveTo(at.getX(), at.getY());
@@ -3067,7 +2995,7 @@ public final class RouteFeature implements TourPanel.Actions {
             heads.forEach(Runnable::run);
         });
         Color walked = current();
-        eachFadingPiece(route, System.currentTimeMillis(), (piece, alpha) -> {
+        eachFade(route, currentTimeMillis(), (piece, alpha) -> {
             Point a = canvas(view, piece[0], plane, me), b = canvas(view, piece[1], plane, me);
             if (a != null && b != null) {
                 g.setColor(alpha(walked, walked.getAlpha() * alpha));
@@ -3083,14 +3011,14 @@ public final class RouteFeature implements TourPanel.Actions {
     /** Whether a walk's arrowhead stands at {@code points[i]}, toward the next point (a neighbour on its floor). */
     static boolean arrowAt(int[] points, int i) {
         return i + 1 < points.length && (points.length - 1 - i) % ARROW_EVERY == ARROW_EVERY / 2
-            && Tiles.distance(points[i], points[i + 1]) == 1 && z(points[i]) == z(points[i + 1]);
+            && distance(points[i], points[i + 1]) == 1 && z(points[i]) == z(points[i + 1]);
     }
 
     /** A route tile's centre on the canvas: on this floor, within the extended scene; else null. */
     Point canvas(WorldView view, int point, int plane, int me) {
-        var local = z(point) != plane || Tiles.distance(point, me) > Constants.EXTENDED_SCENE_SIZE ? null
+        var local = z(point) != plane || distance(point, me) > Constants.EXTENDED_SCENE_SIZE ? null
             : yourHouse.local(view, point);
-        return local == null ? null : Perspective.localToCanvas(client, local, plane);
+        return local == null ? null : localToCanvas(client, local, plane);
     }
 
     /** With Path style Lines with arrows: an arrowhead every this many tiles, as HD World Markers draws them. */
@@ -3105,7 +3033,7 @@ public final class RouteFeature implements TourPanel.Actions {
             {-ux * BACK + uy * HALF, -uy * BACK - ux * HALF}};
         Polygon head = new Polygon();
         for (var corner : corners) {
-            Point p = Perspective.localToCanvas(client, new LocalPoint(at.getX() + (int) round(corner[0]),
+            Point p = localToCanvas(client, new LocalPoint(at.getX() + (int) round(corner[0]),
                 at.getY() + (int) round(corner[1]), at.getWorldView()), plane);
             if (p == null) {
                 return;
@@ -3138,7 +3066,7 @@ public final class RouteFeature implements TourPanel.Actions {
             // The minimap shows 20 tiles around the player (Perspective.localToMinimap).
             eachTile(route, near(), 20, (point, color, strength) -> {
                 var local = isSea(point) || z(point) != plane ? null : yourHouse.local(view, point);
-                Point mini = local == null ? null : Perspective.localToMinimap(client, local);
+                Point mini = local == null ? null : localToMinimap(client, local);
                 if (mini != null) {
                     g.setColor(tint.of(color, MINIMAP_ALPHA * strength));
                     g.fill(circle(mini.getX(), mini.getY(), 1.25));
@@ -3293,7 +3221,7 @@ public final class RouteFeature implements TourPanel.Actions {
     Polygon tilePoly(WorldView view, LocalPoint local, int plane) {
         int sx = local.getSceneX(), sy = local.getSceneY();
         if (sx >= 0 && sy >= 0 && sx < view.getSizeX() && sy < view.getSizeY()) {
-            return Perspective.getCanvasTilePoly(client, local);
+            return getCanvasTilePoly(client, local);
         }
         var heights = view.getTileHeights();
         int ex = sx + EXPANDED_EDGE, ey = sy + EXPANDED_EDGE;
@@ -3301,11 +3229,11 @@ public final class RouteFeature implements TourPanel.Actions {
             || ex + 1 >= heights[plane].length || ey + 1 >= heights[plane][ex].length) {
             return null;
         }
-        int half = Perspective.LOCAL_TILE_SIZE / 2, x = local.getX(), y = local.getY();
+        int half = LOCAL_TILE_SIZE / 2, x = local.getX(), y = local.getY();
         Polygon poly = new Polygon();
         // The corners south-west, south-east, north-east, north-west: 0 is the tile's west or south side, 1 east or north.
         for (int[] c : new int[][]{{0, 0}, {1, 0}, {1, 1}, {0, 1}}) {
-            Point corner = Perspective.localToCanvas(client, x + (2 * c[0] - 1) * half, y + (2 * c[1] - 1) * half,
+            Point corner = localToCanvas(client, x + (2 * c[0] - 1) * half, y + (2 * c[1] - 1) * half,
                 heights[plane][ex + c[0]][ey + c[1]]);
             if (corner == null) {
                 return null;
@@ -3352,12 +3280,12 @@ public final class RouteFeature implements TourPanel.Actions {
             if (route.outcome == NONE) {
                 notes.add("No route from here.");
             } else if (route.outcome == NEAREST) {
-                notes.add(route.exhausted ? "Can't get there." : "Too far to plan: ends as close as it got.");
+                notes.add(route.exhausted ? "Can't get there." : t("tooFar"));
             } else if (route.snapped()) {
-                notes.add("Ends at the nearest tile you can stand on.");
+                notes.add(t("snapped"));
             }
-            if (route.throughWilderness && route.outcome == FOUND) {
-                notes.add("Through the Wilderness: no other way gets there.");
+            if (route.viaWild && route.outcome == FOUND) {
+                notes.add(t("wilderness"));
             }
             return notes;
         }
