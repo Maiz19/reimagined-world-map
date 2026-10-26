@@ -1194,9 +1194,14 @@ final class SearchResults implements MapView.Overlay, MapView.HitLayer {
     }
 
     static JMenuItem item(JPopupMenu menu, String text, Runnable action) {
+        return item(menu, menu.getComponentCount(), text, action);
+    }
+
+    static JMenuItem item(JPopupMenu menu, int at, String text, Runnable action) {
         JMenuItem item = plainItem(text);
         item.addActionListener(e -> action.run());
-        return menu.add(item);
+        menu.insert(item, at);
+        return item;
     }
 
     /** Names from the server's files as they are: a leading {@code <html>} must not render (remote images). */

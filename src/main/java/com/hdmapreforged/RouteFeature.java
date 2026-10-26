@@ -1814,17 +1814,20 @@ public final class RouteFeature implements TourPanel.Actions {
         // Before the entries are made, so they name the planner that will be used.
         choosePlannerOnce();
         var c = controller;
+        // The entry used most at the top of the menu (#20), Clear path under it.
+        boolean theirs = spPlanner();
+        item(popup, 0, theirs ? t("rfPathSp") : c == null ? t("rfPathLoading") : "Path to here",
+            () -> routeTo(point)).setEnabled(theirs || c != null);
+        int at = 1;
+        if (handedOver != null || c != null && c.target() >= 0) {
+            item(popup, at++, tour != null ? "Stop custom route" : "Clear path", this::clearRoute);
+        }
+        popup.insert(new JPopupMenu.Separator(), at);
         popup.addSeparator();
         item(popup, "Add to custom route", () -> addStop(Stop.place(placeName(point), point)))
             .setToolTipText(t("addStopTip", editingName()));
         item(popup, "Custom routes...", () -> forScreens(MapScreen::openTours)).setToolTipText(t("toursTip"));
         item(popup, "Your house...", yourHouse::openHouse).setToolTipText(t("houseTip"));
-        boolean theirs = spPlanner();
-        item(popup, theirs ? t("rfPathSp") : c == null ? t("rfPathLoading") : "Path to here",
-            () -> routeTo(point)).setEnabled(theirs || c != null);
-        if (handedOver != null || c != null && c.target() >= 0) {
-            item(popup, tour != null ? "Stop custom route" : "Clear path", this::clearRoute);
-        }
     }
 
     /** Max tiles of a walkable area to count as one dungeon to fit the map to. */
