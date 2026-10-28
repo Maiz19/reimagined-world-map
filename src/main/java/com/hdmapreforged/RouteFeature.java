@@ -58,6 +58,7 @@ import net.runelite.client.plugins.cluescrolls.*;
 import net.runelite.client.plugins.cluescrolls.clues.*;
 import net.runelite.client.ui.*;
 import net.runelite.client.ui.overlay.*;
+import net.runelite.client.ui.overlay.worldmap.*;
 import net.runelite.client.util.*;
 
 /**
@@ -156,9 +157,11 @@ public final class RouteFeature implements TourPanel.Actions {
     final FairyRingLog fairyRingLog = new FairyRingLog(this);
     // Nothing on the game's own world map: projecting a long route there every frame is too heavy.
     final List<Overlay> overlays = List.of(new GameOverlay(), new MinimapOverlay(), new ItemsOverlay());
-    /** The Clue Scroll plugin's spots for the clue now (packed) and its icon, as the game's world map shows them. */
-    volatile int[] clues = {};
-    volatile java.awt.image.BufferedImage clueIcon;
+    /** The Clue Scroll plugin's spots for the clue now and other plugins' world map icons, as the game's map shows them. */
+    volatile List<WorldMapPoint> marks = List.of();
+    static final Set<String> CORE_POINTS = Set.of("net.runelite.client.plugins.worldmap.MapPoint",
+        "net.runelite.client.plugins.cluescrolls.ClueScrollWorldMapPoint", "net.runelite.client.plugins.party.PartyWorldMapPoint");
+    final WorldMapPointManager worldMapPoints;
 
     volatile ExecutorService searches, background;
     volatile MapScreen[] screens = new MapScreen[0];
@@ -950,19 +953,31 @@ public final class RouteFeature implements TourPanel.Actions {
 
     void tick(WorldPoint location) {
         ticks++;
-        int[] found = {};
+        var found = new ArrayList<WorldMapPoint>();
         for (Plugin p : pluginManager.getPlugins()) {
             if (p instanceof ClueScrollPlugin && pluginManager.isPluginEnabled(p)) {
                 var plugin = (ClueScrollPlugin) p;
                 var clue = plugin.getClue();
                 var at = clue instanceof LocationsClueScroll ? ((LocationsClueScroll) clue).getLocations(plugin)
                     : clue instanceof LocationClueScroll ? ((LocationClueScroll) clue).getLocations(plugin) : null;
-                found = at == null ? found : Arrays.stream(at).filter(Objects::nonNull).mapToInt(RouteFeature::pack).toArray();
-                clueIcon = plugin.getClueScrollImage();
+                for (var point : at == null ? new WorldPoint[0] : at) {
+                    if (point != null) {
+                        found.add(WorldMapPoint.builder().worldPoint(point).image(plugin.getClueScrollImage())
+                            .tooltip(t("rfClue")).snapToEdge(true).build());
+                    }
+                }
             }
         }
-        if (!Arrays.equals(found, clues)) {
-            clues = found;
+        // Other plugins' icons (Slayer task spots, Quest Helper): the list is not public, removeIf only reads it here.
+        // RuneLite's own (World Map, Clue Scroll, Party) are left out.
+        worldMapPoints.removeIf(point -> {
+            if (!CORE_POINTS.contains(point.getClass().getName())) {
+                found.add(point);
+            }
+            return false;
+        });
+        if (!found.equals(marks)) {
+            marks = found;
             repaint();
         }
         var before = lastLocation;
@@ -2655,18 +2670,23 @@ public final class RouteFeature implements TourPanel.Actions {
         Route route = ahead;
         int to = spPlanner() ? handed == null ? -1 : pack(handed)
             : route != null && route.end >= 0 ? route.end : c == null ? -1 : c.target();
-        // The clue's spots with the Clue Scroll plugin's icon, at the view's edge when out of it; one the route ends by
-        // stands for the destination's arrow.
-        var icon = clueIcon;
-        for (int clue : clues) {
-            var point = worldPoint(clue);
+        // The clue's spots and other plugins' icons, at the view's edge when out of it if they ask; one the route ends
+        // by stands for the destination's arrow.
+        for (var mark : marks) {
+            var point = mark.getWorldPoint();
+            var icon = mark.getImage();
             if (icon != null && view.shows(point)) {
+                double x = x(view, pack(point)), y = y(view, pack(point));
+                var spot = mark.isSnapToEdge() ? view.edge(x, y) : new Point2D.Double(x, y);
+                int w = icon.getWidth(), h = icon.getHeight(), left = (int) spot.getX() - w / 2, top = (int) spot.getY() - h / 2;
+                if (mark.getImagePoint() != null) {
+                    left = (int) spot.getX() - mark.getImagePoint().getX();
+                    top = (int) spot.getY() - mark.getImagePoint().getY();
+                }
                 to = to >= 0 && worldPoint(to).distanceTo(point) <= 2 ? -1 : to;
-                var spot = view.edge(x(view, clue), y(view, clue));
-                int w = icon.getWidth(), h = icon.getHeight();
-                g.drawImage(icon, (int) spot.getX() - w / 2, (int) spot.getY() - h / 2, null);
-                clicks.add(new RoundRectangle2D.Double(spot.getX() - w / 2, spot.getY() - h / 2, w, h, 8, 8),
-                    () -> view.focus(point), t("rfClue"));
+                g.drawImage(icon, left, top, null);
+                clicks.add(new RoundRectangle2D.Double(left, top, w, h, 8, 8), () -> view.focus(point),
+                    mark.getTooltip() != null ? mark.getTooltip() : mark.getName());
             }
         }
         int at = to;
