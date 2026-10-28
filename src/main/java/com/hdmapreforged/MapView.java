@@ -71,6 +71,10 @@ final class MapView extends JComponent implements Projection {
         default Point2D iconCenter(Poi poi, Projection projection) {
             return null;
         }
+
+        /** One of its icons clicked, once selected. */
+        default void clicked(Poi poi) {
+        }
     }
 
     @RequiredArgsConstructor
@@ -338,6 +342,9 @@ final class MapView extends JComponent implements Projection {
                             goIn(inside);
                         } else {
                             select(hit);
+                            if (hit != null) {
+                                hitLayers.forEach(layer -> layer.clicked(hit));
+                            }
                         }
                     } else {
                         zoomAt(1, e.getPoint());

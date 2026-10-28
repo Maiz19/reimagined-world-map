@@ -36,6 +36,7 @@ MAP_LINK	Map link	DUNGEONS	4AA3E8	13	20	TRANSPORT	2
 GAME_ICON	Map icon	GAME_ICONS	B8B8B8		20	TRANSPORT	2
 FOUND	Search result	GAME_ICONS	46DC5A		20	TRANSPORT	2
 GRAVE	Grave	GAME_ICONS	8E8E96		20	TRANSPORT	2
+PLUGIN_ICON	Other plugin's icon	GAME_ICONS	6EC6FF		20	TRANSPORT	2
 # The game's own map icons of no type above, by the name of their key on the game's world map (without a code in
 # brackets, as "Fairy ring (AIQ)"): the name the Icons panel shows and hides them by (empty: the key's), and its
 # group there. Keys not listed are under "Other map icons".

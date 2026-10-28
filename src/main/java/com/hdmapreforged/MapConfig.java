@@ -106,6 +106,12 @@ public interface MapConfig extends Config {
         return true;
     }
 
+    @ConfigItem(keyName = "pluginIcons", name = "Show other plugins' map icons", position = 5, section = map,
+        description = "What other plugins put on the game's world map: slayer tasks, Quest Helper's step")
+    default boolean pluginIcons() {
+        return true;
+    }
+
     @Range(min = 1, max = 9)
     @ConfigItem(keyName = "defaultZoom", name = "Default zoom", position = 3, section = map,
         description = "1 far out, 9 close up")

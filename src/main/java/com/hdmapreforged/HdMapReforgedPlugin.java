@@ -33,6 +33,7 @@ import net.runelite.client.input.*;
 import net.runelite.client.input.KeyListener;
 import net.runelite.client.plugins.*;
 import net.runelite.client.ui.*;
+import net.runelite.client.ui.overlay.worldmap.*;
 import net.runelite.client.util.*;
 import okhttp3.*;
 
@@ -84,6 +85,9 @@ public class HdMapReforgedPlugin extends Plugin {
     @Inject
     PartyMap party;
 
+    @Inject
+    WorldMapPointManager worldMapPointManager;
+
     /** A fresh one each start: nothing of a run before carries over. */
     @Inject
     Provider<RouteFeature> routes;
@@ -118,6 +122,10 @@ public class HdMapReforgedPlugin extends Plugin {
     BigWindow fullMap;
     IconLayer[] gameIcons = new IconLayer[0];
     GraveMarker[] graves = new GraveMarker[0];
+    PluginPointsLayer[] pluginPoints = new PluginPointsLayer[0];
+    /** Other plugins' world map icons, the manager's own list; and as last seen, to repaint when they change. */
+    List<WorldMapPoint> mapPoints = List.of();
+    int mapPointsSeen;
     final HotkeyListener mapKey = new HotkeyListener(() -> config.openMapKey()) {
         public void keyPressed(KeyEvent e) {
             // A key that types goes to the chat, an input box or an interface taking keys, not to the map.
@@ -232,6 +240,9 @@ public class HdMapReforgedPlugin extends Plugin {
         panel.setTours(route.sidebarTours(panel::redoTours));
         gameIcons = new IconLayer[]{gameIconLayer(screen), gameIconLayer(fullScreen)};
         graves = new GraveMarker[]{new GraveMarker(screen.view), new GraveMarker(fullScreen.view)};
+        mapPoints = PluginPointsLayer.points(worldMapPointManager);
+        pluginPoints = new PluginPointsLayer[]{new PluginPointsLayer(screen.view, mapPoints, config::pluginIcons),
+            new PluginPointsLayer(fullScreen.view, mapPoints, config::pluginIcons)};
         clientThread.invoke(this::checkGrave);
         var pictures = new NpcImages((id, done) -> {
             String version = tiles.version;
@@ -388,6 +399,11 @@ public class HdMapReforgedPlugin extends Plugin {
             });
         }
         updateUnlocks();
+        int points = PluginPointsLayer.signature(mapPoints);
+        if (points != mapPointsSeen) {
+            mapPointsSeen = points;
+            refreshLater();
+        }
     }
 
     /** As the game's maps show it: in instances the copied real location, on a boat the boat's main-world place. */

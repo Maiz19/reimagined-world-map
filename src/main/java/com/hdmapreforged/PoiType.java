@@ -14,7 +14,9 @@ enum PoiType {
     /** A search result without an icon of its own: only selected, never drawn. */
     FOUND,
     /** One's grave while it stands: drawn by {@link GraveMarker}. */
-    GRAVE;
+    GRAVE,
+    /** Another plugin's icon on the game's world map: drawn by {@link PluginPointsLayer}. */
+    PLUGIN_ICON;
 
     final String displayName;
     final Layer layer;
