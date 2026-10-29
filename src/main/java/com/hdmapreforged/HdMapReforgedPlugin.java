@@ -731,6 +731,14 @@ public class HdMapReforgedPlugin extends Plugin {
      * running, so the remembered one is not taken again (it may be the broken one). Data thread.
      */
     void resolveVersions(boolean now) {
+        resolveVersions(now, true);
+    }
+
+    /**
+     * {@code retrying} false: a check of its own (the login's, the hourly one), which leaves a failed version's retry
+     * waiting as it is, so it neither pushes that retry further away nor lengthens the backoff.
+     */
+    void resolveVersions(boolean now, boolean retrying) {
         var known = ServerCache.known(home.joinSegment(ServerCache.KNOWN));
         if (known != null && !now) {
             useVersion(known);
@@ -746,8 +754,11 @@ public class HdMapReforgedPlugin extends Plugin {
                     // The first start, and no answer: nothing to show until the server answers.
                     retryLater(started, RETRY_MS, () -> resolveVersions(false));
                 } else if (failedMaps > 0) {
-                    // A failed version's retry, and no answer: asked again, further apart.
-                    retryMap(started, wantedVersion);
+                    // A failed version's retry, and no answer: asked again, further apart. A check of its own has
+                    // that retry still waiting.
+                    if (retrying) {
+                        retryMap(started, wantedVersion);
+                    }
                 } else {
                     // A start on the version remembered, and no answer: asked again (a newer version, the search's
                     // data), not only an hour on.
@@ -776,7 +787,7 @@ public class HdMapReforgedPlugin extends Plugin {
         long now = System.currentTimeMillis();
         if (now - versionsAsked >= gapMs) {
             versionsAsked = now;
-            runData(() -> resolveVersions(true));
+            runData(() -> resolveVersions(true, false));
         }
     }
 
