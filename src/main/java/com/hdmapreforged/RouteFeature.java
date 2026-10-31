@@ -1297,6 +1297,14 @@ public final class RouteFeature implements TourPanel.Actions {
             // Sent after all: as it is.
             bankShut = false;
             rememberBank(items);
+            if (atBank && !bankLooked && shown != null) {
+                // Once as it opens, with what it holds: a bank step shows while one can still take its items.
+                bankLooked = true;
+                invokeLater(() -> {
+                    itemReroute.setRepeats(false);
+                    itemReroute.restart();
+                });
+            }
             return;
         }
         var before = state;
@@ -1341,9 +1349,14 @@ public final class RouteFeature implements TourPanel.Actions {
     boolean atBank, changedAtBank;
     /** A deposit box is open: each deposit goes to the bank, which the game does not send. Client thread. */
     boolean depositBox;
+    /** The route was looked for again with the bank just opened. Client thread. */
+    boolean bankLooked;
 
     @Subscribe
     public void onWidgetLoaded(WidgetLoaded event) {
+        if (bank(event.getGroupId()) && !atBank) {
+            bankLooked = false;
+        }
         atBank |= bank(event.getGroupId());
         depositBox |= event.getGroupId() == InterfaceID.BANK_DEPOSITBOX;
     }
