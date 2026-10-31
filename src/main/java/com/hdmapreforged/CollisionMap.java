@@ -20,7 +20,7 @@ final class CollisionMap {
     /** By {@code region * 4 + plane}: five bitsets of 64 longs, or null. */
     final long[][] floors = new long[1 << 18][];
     /** By packed tile: "Chop-down Vines (bring an axe)". */
-    final Map<Integer, String> obstacles;
+    final Map<Integer, Route.Obstacle> obstacles;
     final boolean[] obstacleRegions = new boolean[1 << 16];
     /** One's own house, where no map of the game lies; replaced whole. */
     @Setter
@@ -34,15 +34,16 @@ final class CollisionMap {
 
     static CollisionMap read(InputStream zipped) throws IOException {
         byte[] bin = null;
-        var obstacles = new HashMap<Integer, String>();
-        var zip = new ZipInputStream(zipped);
-        ZipEntry entry;
-        while ((entry = zip.getNextEntry()) != null) {
-            if ("collision.bin".equals(entry.getName())) {
-                bin = RouteFiles.read(zip, MAX_BIN_BYTES, "collision.bin");
-            } else if ("obstacles.tsv".equals(entry.getName())) {
-                Pathfinder.rows(new ByteArrayInputStream(RouteFiles.read(zip, MAX_TABLE_BYTES, "obstacles.tsv")), 0,
-                    parts -> obstacle(obstacles, parts));
+        var obstacles = new HashMap<Integer, Route.Obstacle>();
+        try (var zip = new ZipInputStream(zipped)) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                if ("collision.bin".equals(entry.getName())) {
+                    bin = RouteFiles.read(zip, MAX_BIN_BYTES, "collision.bin");
+                } else if ("obstacles.tsv".equals(entry.getName())) {
+                    RouteFiles.rows(new ByteArrayInputStream(RouteFiles.read(zip, MAX_TABLE_BYTES, "obstacles.tsv")), 0,
+                        parts -> obstacle(obstacles, parts));
+                }
             }
         }
         if (bin == null) {
@@ -89,19 +90,16 @@ final class CollisionMap {
     }
 
     /** "x y plane <tab> name <tab> action <tab> what it takes"; bad lines are skipped. */
-    static void obstacle(Map<Integer, String> obstacles, String[] parts) {
-        if (parts.length < 4) {
-            return;
-        }
-        int at = Tiles.parse(parts[0]);
+    static void obstacle(Map<Integer, Route.Obstacle> obstacles, String[] parts) {
+        int at = parts.length < 4 ? -1 : Tiles.parse(parts[0]);
         if (at < 0) {
             return;
         }
         String action = parts[2].isEmpty() ? parts[2] : Character.toUpperCase(parts[2].charAt(0)) + parts[2].substring(1);
-        obstacles.put(at, action + " " + parts[1] + " (bring " + parts[3] + ")");
+        obstacles.put(at, new Route.Obstacle(at, action + " " + parts[1] + " (bring " + parts[3] + ")", parts[3]));
     }
 
-    String obstacle(int node) {
+    Route.Obstacle obstacle(int node) {
         return isObstacle(Tiles.x(node), Tiles.y(node), node) ? obstacles.get(node) : null;
     }
 

@@ -2,7 +2,6 @@ package com.hdmapreforged;
 
 import java.awt.*;
 import java.io.*;
-import java.nio.charset.*;
 import java.util.*;
 
 enum PoiType {
@@ -13,7 +12,7 @@ enum PoiType {
     SHOP, QUEST_START, MAP_LINK, GAME_ICON,
     /** A search result without an icon of its own: only selected, never drawn. */
     FOUND,
-    /** One's grave while it stands: drawn by {@link GraveMarker}. */
+    /** One's grave while it stands: {@link MapView#grave}. */
     GRAVE;
 
     final String displayName;
@@ -48,7 +47,7 @@ enum PoiType {
         static final Map<String, String[]> TEXTS = rows("data/texts.tsv");
     }
 
-    /** A longer text of the plugin's by its key, with {@code args} in place of its %s (data/texts.tsv, kept out of the code the review bot counts). */
+    /** A longer text of the plugin's by its key, with {@code args} in place of its %s (data/texts.tsv). */
     static String t(String key, Object... args) {
         return String.format(Rows.TEXTS.get(key)[1], args);
     }
@@ -56,10 +55,8 @@ enum PoiType {
     /** A bundled table's rows by their first cell. */
     static Map<String, String[]> rows(String file) {
         var rows = new HashMap<String, String[]>();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-            PoiType.class.getResourceAsStream(file), StandardCharsets.UTF_8))) {
-            reader.lines().filter(line -> !line.startsWith("#")).map(line -> line.split("\t"))
-                .forEach(cells -> rows.put(cells[0], cells));
+        try {
+            RouteFiles.rows(PoiType.class.getResourceAsStream(file), 0, cells -> rows.put(cells[0], cells));
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

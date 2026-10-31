@@ -18,7 +18,7 @@ import com.hdmapreforged.PartyMembers.Marker;
 
 /** Party members on the map: a disc (or avatar) with their initial; name and world when pointed at or clicked. */
 @RequiredArgsConstructor
-final class PartyOverlay implements MapView.Overlay {
+class PartyOverlay implements MapView.Overlay {
     /** Distinct from the player's yellow and the icon colours. */
     static final Color[] COLORS = Arrays.stream(new int[]{0x40c8ff, 0xff69b4, 0x5ae678, 0xff8c3c, 0xaa82ff, 0x3ce6d2,
         0xff5a5a, 0xc8e650}).mapToObj(Color::new).toArray(Color[]::new);
@@ -31,7 +31,7 @@ final class PartyOverlay implements MapView.Overlay {
      * Repaints ~30 times a second while something moves, instead of asking for a frame from inside paint (which never
      * lets the map rest); stops by itself once nothing moved for a moment. Swing thread only.
      */
-    static final class Ticker {
+    static class Ticker {
         static final int FRAME_MS = 33;
         static final long LINGER_MS = 200;
         final Timer timer;
@@ -64,7 +64,7 @@ final class PartyOverlay implements MapView.Overlay {
         return COLORS[(int) ((mixed >>> 33) % COLORS.length)];
     }
 
-    public void paint(Graphics2D g, Projection projection) {
+    public void paint(Graphics2D g, MapView projection) {
         var all = party.markers();
         if (all.isEmpty()) {
             party.ticker.painted(false);
@@ -72,20 +72,28 @@ final class PartyOverlay implements MapView.Overlay {
         }
         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
         boolean rising = false;
+        // This map's party list (the projection is the map itself): its choice, its hover and its ticker.
+        var widget = party.widgets.get(projection);
         for (var marker : all) {
             if (!projection.shows(marker.point)) {
                 continue;
             }
             var at = projection.shown(marker.point);
             double x = projection.screenX(at.getX() + 0.5), y = projection.screenY(at.getY() + 0.5);
-            // Only the clicked member and the one under the mouse show a name.
+            // Upright on a turned map, round the member's spot.
+            var back = MapView.upright(g, x, y);
+            // Only the member clicked and the one under the mouse on this map show a name.
             paintMarker(g, projection, marker, at, x, y, party.myWorld,
-                party.widgets.values().stream().anyMatch(w -> w.selected() == marker.id), marker.id == party.hoveredMember);
+                widget != null && widget.selected() == marker.id, widget != null && widget.hovered == marker.id,
+                party.members.foe(marker.id, System.currentTimeMillis()));
             rising |= paintLoot(g, projection, marker, x, y);
             rising |= x > -120 && x < projection.width() + 120 && y > -80 && y < projection.height() + 80
                 && paintXp(g, party.xp(marker.id), party::skill, x + 14, y - 6);
+            if (back != null) {
+                g.setTransform(back);
+            }
         }
-        party.ticker.painted(rising);
+        (widget != null ? widget.ticker : party.ticker).painted(rising);
     }
 
     static final Color UNTRADEABLE = new Color(240, 210, 120);
@@ -103,7 +111,7 @@ final class PartyOverlay implements MapView.Overlay {
     }
 
     /** Drops rising above the marker, newest lowest; true while any shows. */
-    boolean paintLoot(Graphics2D g, Projection projection, Marker marker, double x, double y) {
+    boolean paintLoot(Graphics2D g, MapView projection, Marker marker, double x, double y) {
         var showing = party.members.loot(marker.id, System.currentTimeMillis());
         if (showing.isEmpty()) {
             return false;
@@ -113,8 +121,7 @@ final class PartyOverlay implements MapView.Overlay {
             return false;
         }
         long now = System.currentTimeMillis();
-        var layer = (Graphics2D) g.create();
-        try {
+        on(g, layer -> {
             layer.setFont(NAME_FONT);
             var metrics = layer.getFontMetrics();
             for (int k = 0; k < showing.size(); k++) {
@@ -123,7 +130,7 @@ final class PartyOverlay implements MapView.Overlay {
                 float alpha = (float) (t < 0.75 ? 1 : 1 - (t - 0.75) / 0.25);
                 layer.setComposite(getInstance(SRC_OVER, max(0, alpha)));
                 double top = y - 22 - (showing.size() - 1 - k) * 22 - rise * 50;
-                String text = drop.name != null ? drop.name : shortValue(drop.value);
+                String text = drop.name != null ? drop.name : coins(drop.value);
                 BufferedImage icon = party.item(drop.item, drop.quantity);
                 int iconW = icon == null ? 0 : 26;
                 double width = iconW + metrics.stringWidth(text) + 10, left = x - width / 2;
@@ -137,9 +144,7 @@ final class PartyOverlay implements MapView.Overlay {
                     drop.name != null ? UNTRADEABLE : drop.value >= 10_000_000 ? new Color(255, 102, 178)
                     : drop.value >= 1_000_000 ? new Color(153, 255, 153) : new Color(102, 178, 255));
             }
-        } finally {
-            layer.dispose();
-        }
+        });
         return true;
     }
 
@@ -147,20 +152,17 @@ final class PartyOverlay implements MapView.Overlay {
      * Experience drops rising from (x, y) as the game's own do, newest lowest, each skill's icon before its amount (beside
      * every member's marker, and in the sidebar's party list); true while any shows.
      */
-    static boolean paintXp(Graphics2D g, List<PartyMembers.Drop> showing, IntFunction<BufferedImage> icons, double x,
-        double y) {
+    static boolean paintXp(Graphics2D g, List<PartyMembers.Drop> showing, IntFunction<BufferedImage> icons, double x, double y) {
         if (showing.isEmpty()) {
             return false;
         }
         long now = System.currentTimeMillis();
-        var layer = (Graphics2D) g.create();
-        try {
+        on(g, layer -> {
             layer.setFont(SMALL_FONT);
             for (int k = 0; k < showing.size(); k++) {
                 var drop = showing.get(k);
                 double t = min(1, (now - drop.at) / (double) PartyMembers.DROP_MS);
-                layer.setComposite(getInstance(SRC_OVER,
-                    (float) max(0, t < 0.7 ? 1 : 1 - (t - 0.7) / 0.3)));
+                layer.setComposite(getInstance(SRC_OVER, (float) max(0, t < 0.7 ? 1 : 1 - (t - 0.7) / 0.3)));
                 double top = y - (showing.size() - 1 - k) * 15 - (1 - pow(1 - t, 3)) * 30;
                 BufferedImage icon = icons.apply(drop.skill);
                 String amount = "+" + FriendsWidget.AMOUNT.format(drop.amount);
@@ -174,24 +176,18 @@ final class PartyOverlay implements MapView.Overlay {
                 }
                 TextSprites.shadowed(layer, amount, tx, (float) top, Color.WHITE);
             }
-        } finally {
-            layer.dispose();
-        }
+        });
         return true;
     }
 
-    static void paintMarker(Graphics2D g, Projection projection, Marker marker, WorldPoint at, double x,
-        double y, int myWorld, boolean chosen, boolean hover) {
+    static void paintMarker(Graphics2D g, MapView projection, Marker marker, WorldPoint at, double x,
+        double y, int myWorld, boolean chosen, boolean hover, PartyMembers.Foe foe) {
         if (x < -40 || y < -40 || x > projection.width() + 40 || y > projection.height() + 40) {
             return;
         }
-        float alpha = marker.alpha;
         boolean otherFloor = at.getPlane() != projection.plane();
-        if (otherFloor) {
-            alpha *= 0.6f;
-        }
-        var layer = (Graphics2D) g.create();
-        try {
+        float alpha = marker.alpha * (otherFloor ? 0.6f : 1);
+        on(g, layer -> {
             layer.setComposite(getInstance(SRC_OVER, alpha));
             Color color = color(marker.id);
             double r = 7.5;
@@ -226,10 +222,60 @@ final class PartyOverlay implements MapView.Overlay {
                 ring(layer, circle(x, y, r + 5), 3f, Color.WHITE);
                 ring(layer, circle(x, y, r + 8), 2f, color);
             }
+            if (foe != null) {
+                paintFoe(layer, foe, x - r - 7, y, alpha);
+            }
             if (chosen || hover) {
                 paintLabel(layer, marker, x, y + r + 4, color, otherFloor,
                     marker.world > 0 && myWorld > 0 && marker.world != myWorld);
             }
+        });
+    }
+
+    static final Color FOE = new Color(200, 50, 40), HEALTH = new Color(0, 200, 40), HEALTH_LOST = new Color(150, 20, 20);
+    static final int FOE_BAR = 56;
+
+    /**
+     * Left of a member who fights, pointing at them: the NPC's name over its health bar, green over red as the game draws
+     * it; grey while their game has not shown it yet, dimmed for a moment once the fight is over.
+     */
+    static void paintFoe(Graphics2D g, PartyMembers.Foe foe, double right, double y, float alpha) {
+        on(g, layer -> {
+            layer.setComposite(getInstance(SRC_OVER, alpha * (foe.ended > 0 ? 0.55f : 1)));
+            layer.setFont(SMALL_FONT);
+            var metrics = layer.getFontMetrics();
+            int width = max(FOE_BAR, metrics.stringWidth(foe.name)) + 10, height = metrics.getHeight() + 9;
+            double left = right - 5 - width, top = y - height / 2.0;
+            var box = new RoundRectangle2D.Double(left, top, width, height, 8, 8);
+            var tail = new Path2D.Double();
+            tail.moveTo(right - 5, y - 4);
+            tail.lineTo(right, y);
+            tail.lineTo(right - 5, y + 4);
+            tail.closePath();
+            layer.setColor(LABEL_BACKGROUND);
+            layer.fill(box);
+            layer.fill(tail);
+            ring(layer, box, 1f, FOE);
+            double mid = left + width / 2.0;
+            TextSprites.shadowed(layer, foe.name, (float) (mid - metrics.stringWidth(foe.name) / 2.0),
+                (float) (top + 1 + metrics.getAscent()), Color.WHITE);
+            double barLeft = mid - FOE_BAR / 2.0, barTop = top + height - 7;
+            layer.setColor(foe.health < 0 ? Color.GRAY : HEALTH_LOST);
+            layer.fill(new Rectangle2D.Double(barLeft, barTop, FOE_BAR, 4));
+            if (foe.health > 0) {
+                layer.setColor(HEALTH);
+                layer.fill(new Rectangle2D.Double(barLeft, barTop, FOE_BAR * foe.health, 4));
+            }
+            layer.setColor(Color.BLACK);
+            layer.draw(new Rectangle2D.Double(barLeft - 0.5, barTop - 0.5, FOE_BAR + 1, 5));
+        });
+    }
+
+    /** Paints on a copy of {@code g}, disposed after. */
+    static void on(Graphics2D g, Consumer<Graphics2D> paint) {
+        var layer = (Graphics2D) g.create();
+        try {
+            paint.accept(layer);
         } finally {
             layer.dispose();
         }
@@ -243,7 +289,7 @@ final class PartyOverlay implements MapView.Overlay {
 
     static void paintLabel(Graphics2D g, Marker marker, double x, double top, Color color,
         boolean otherFloor, boolean otherWorld) {
-        String name = marker.name != null ? marker.name : "Party member";
+        String name = marker.label();
         String detail = detail(marker, otherFloor, otherWorld);
         g.setFont(NAME_FONT);
         var nameMetrics = g.getFontMetrics();

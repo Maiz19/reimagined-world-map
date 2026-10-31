@@ -13,7 +13,7 @@ import lombok.*;
  * text: clicked, it empties the field.
  */
 @RequiredArgsConstructor
-final class HintField extends JTextField {
+class HintField extends JTextField {
     static final Color HINT = new Color(150, 150, 150);
     /** Width of the cross's part at the right end. */
     static final int CROSS = 18;

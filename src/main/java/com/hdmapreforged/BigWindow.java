@@ -23,7 +23,7 @@ import net.runelite.api.*;
  * for a click from another program, which it hands on to the game; never moves or resizes the client window. Swing
  * thread only.
  */
-final class BigWindow {
+class BigWindow {
     static final Color GRIP_DOTS = new Color(255, 255, 255, 90);
     static final int EDGE = 8;
     /** Thicker than the sides: easy to take hold of. */
@@ -48,11 +48,16 @@ final class BigWindow {
     boolean fromOutside;
     final ComponentListener follower = new ComponentAdapter() {
         public void componentMoved(ComponentEvent e) {
-            place();
+            // Closed, it is placed when it opens (see open).
+            if (isOpen()) {
+                place();
+            }
         }
 
         public void componentResized(ComponentEvent e) {
-            place();
+            if (isOpen()) {
+                place();
+            }
         }
 
         public void componentHidden(ComponentEvent e) {
@@ -70,8 +75,7 @@ final class BigWindow {
         }
     };
 
-    BigWindow(Client client, MapScreen screen, String savedBounds, Consumer<String> saveBounds,
-        Predicate<KeyEvent> isMapKey) {
+    BigWindow(Client client, MapScreen screen, String savedBounds, Consumer<String> saveBounds, Predicate<KeyEvent> isMapKey) {
         this.client = client;
         this.screen = screen;
         this.saveBounds = saveBounds;
@@ -82,7 +86,7 @@ final class BigWindow {
             relative = (Rectangle2D) decoded[0];
             maximised = (Boolean) decoded[1];
         }
-        screen.setScreenLayout(MapScreen.Layout.FULL);
+        screen.layOut();
         screen.view.addMouseListener(new MouseAdapter() {
             public void mouseReleased(MouseEvent e) {
                 invokeLater(BigWindow.this::giveKeysBack);
@@ -208,7 +212,7 @@ final class BigWindow {
      * The first click from another program, on a card's button, a panel or the frame as on the map: the keys go back
      * to the game, or the window's first field would keep them; on a text field they stay, to type.
      */
-    final class FirstClick extends LayerUI<JComponent> {
+    class FirstClick extends LayerUI<JComponent> {
         public void installUI(JComponent c) {
             super.installUI(c);
             ((JLayer<?>) c).setLayerEventMask(AWTEvent.MOUSE_EVENT_MASK);
@@ -241,11 +245,7 @@ final class BigWindow {
 
             protected void paintComponent(Graphics graphics) {
                 super.paintComponent(graphics);
-                var g = (Graphics2D) graphics.create();
-                g.setRenderingHint(KEY_ANTIALIASING, VALUE_ANTIALIAS_ON);
-                g.setColor(GRIP_DOTS);
-                PoiIcons.glyph(g, "GRIP_CORNER", getWidth() - 3, getHeight() - 3);
-                g.dispose();
+                grip(graphics, "GRIP_CORNER", getWidth() - 3, getHeight() - 3);
             }
         };
         root.setBackground(FRAME);
@@ -303,6 +303,14 @@ final class BigWindow {
 
     void save() {
         saveBounds.accept(encode(relative, maximised));
+    }
+
+    /** Another profile's saved place (a profile switch): taken, and the window moved to it while open. */
+    void restore(String savedBounds) {
+        var decoded = decode(savedBounds);
+        relative = decoded == null ? null : (Rectangle2D) decoded[0];
+        maximised = decoded != null && (Boolean) decoded[1];
+        place();
     }
 
     static String encode(Rectangle2D relative, boolean maximised) {
@@ -390,7 +398,7 @@ final class BigWindow {
         }
     }
 
-    final class Grip extends JComponent {
+    class Grip extends JComponent {
         Grip() {
             // The grip's height: 10 pixels.
             setPreferredSize(new Dimension(100, 10));
@@ -433,18 +441,23 @@ final class BigWindow {
         }
 
         protected void paintComponent(Graphics graphics) {
-            var g = (Graphics2D) graphics.create();
-            g.setRenderingHint(KEY_ANTIALIASING, VALUE_ANTIALIAS_ON);
-            g.setColor(FRAME);
-            g.fillRect(0, 0, getWidth(), getHeight());
-            g.setColor(GRIP_DOTS);
-            PoiIcons.glyph(g, "GRIP", getWidth() / 2.0, getHeight() / 2.0);
-            g.dispose();
+            graphics.setColor(FRAME);
+            graphics.fillRect(0, 0, getWidth(), getHeight());
+            grip(graphics, "GRIP", getWidth() / 2.0, getHeight() / 2.0);
         }
     }
 
+    /** The grip's dots: {@code glyph} at (x, y). */
+    static void grip(Graphics graphics, String glyph, double x, double y) {
+        var g = (Graphics2D) graphics.create();
+        g.setRenderingHint(KEY_ANTIALIASING, VALUE_ANTIALIAS_ON);
+        g.setColor(GRIP_DOTS);
+        PoiIcons.glyph(g, glyph, x, y);
+        g.dispose();
+    }
+
     @RequiredArgsConstructor
-    final class Resizer extends Drag {
+    class Resizer extends Drag {
         final JComponent root;
         int edges;
 

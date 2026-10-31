@@ -13,11 +13,12 @@ final class ReturnTracker {
     void update(int node) {
         var area = node < 0 ? null : ReturnAreas.at(node);
         if (area != null) {
-            if (inside != area) {
+            // By name: a new map version's tables read the same area again.
+            if (inside == null || !inside.name.equals(area.name)) {
                 // Came in (or into another such area): from where one stood just before, if one was outside then.
                 exit = inside == null && lastOutside >= 0 ? lastOutside : -1;
-                inside = area;
             }
+            inside = area;
             return;
         }
         inside = null;
@@ -30,5 +31,12 @@ final class ReturnTracker {
     /** Where the exit of the area the player is in leads (where they came from), or -1. */
     int exit() {
         return inside == null ? -1 : exit;
+    }
+
+    /** Logged out: the next login's place says nothing of where one came from. Client thread. */
+    void reset() {
+        lastOutside = -1;
+        inside = null;
+        exit = -1;
     }
 }

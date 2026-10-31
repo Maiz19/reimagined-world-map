@@ -19,7 +19,7 @@ import java.util.function.*;
 import javax.imageio.ImageIO;
 
 /** Vector map icons, so they stay sharp at every zoom level and interface scale. */
-final class PoiIcons {
+class PoiIcons {
     static final Color OUTLINE = new Color(20, 18, 16), GLYPH = new Color(255, 255, 255, 240);
 
     /** Rendered badges by type, size and screen scale. */
@@ -35,6 +35,7 @@ final class PoiIcons {
      */
     static void paintCached(Graphics2D g, PoiType type, int picture, double cx, double cy, double size, int emphasis,
         boolean locked) {
+        var back = MapView.upright(g, cx, cy);
         var transform = g.getTransform();
         double device = device(transform);
         // Quarter pixels of badge size, so zooming changes the image in small steps.
@@ -67,6 +68,9 @@ final class PoiIcons {
             SPRITE_PIXELS.addAndGet((long) cached.getWidth() * cached.getHeight());
         }
         blit(g, transform, cached, cx - extent / 2, cy - extent / 2);
+        if (back != null) {
+            g.setTransform(back);
+        }
     }
 
     /** The game's pictures by {@link Poi#picture} for the Icons panel, as the game has them; {@link #NONE} while asked for. */
@@ -117,8 +121,7 @@ final class PoiIcons {
             g.drawImage(sprite, (int) round(x), (int) round(y), null);
             return;
         }
-        if ((transform.getType() & (TYPE_GENERAL_ROTATION | TYPE_QUADRANT_ROTATION
-            | TYPE_GENERAL_TRANSFORM | TYPE_FLIP)) != 0) {
+        if ((transform.getType() & (TYPE_GENERAL_ROTATION | TYPE_QUADRANT_ROTATION | TYPE_GENERAL_TRANSFORM | TYPE_FLIP)) != 0) {
             double device = device(transform);
             var place = new AffineTransform(transform);
             place.translate(x, y);
@@ -135,7 +138,7 @@ final class PoiIcons {
     /** A white dot with a coloured rim, marking where a line ends; from a cached image. */
     static void paintDot(Graphics2D g, double cx, double cy, Color rim) {
         double device = device(g.getTransform());
-        long key = (1L << 62) | ((long) (rim.getRGB() & 0xffffffffL) << 8) | (int) round(device * 10);
+        long key = (1L << 62) | ((rim.getRGB() & 0xffffffffL) << 8) | (int) round(device * 10);
         double extent = 13;
         blit(g, SPRITES.computeIfAbsent(key, k -> sprite(extent, extent, device, sg -> {
             var dot = new Ellipse2D.Double(extent / 2 - 4.5, extent / 2 - 4.5, 9, 9);
@@ -188,8 +191,7 @@ final class PoiIcons {
 
     /** A picture of {@code width} by {@code height} units, {@code device} pixels a unit (rounded up), drawn antialiased. */
     static BufferedImage sprite(double width, double height, double device, Consumer<Graphics2D> draw) {
-        BufferedImage sprite = new BufferedImage((int) ceil(width * device), (int) ceil(height * device),
-            TYPE_INT_ARGB);
+        BufferedImage sprite = new BufferedImage((int) ceil(width * device), (int) ceil(height * device), TYPE_INT_ARGB);
         var sg = sprite.createGraphics();
         sg.setRenderingHint(KEY_ANTIALIASING, VALUE_ANTIALIAS_ON);
         sg.scale(device, device);
@@ -207,26 +209,20 @@ final class PoiIcons {
 
     /** The game's own map icon for the type if it has one, else our badge for it, pixel art of the same size. */
     static void paint(Graphics2D g, PoiType type, double cx, double cy, double size, Color ring, boolean locked) {
-        BufferedImage game = GameIcons.get(type), icon = game != null ? game : badge(type);
+        BufferedImage game = GameIcons.get(type), icon = game != null ? game : badge(type.name());
         paintGameIcon(g, locked ? locked(icon) : icon, cx, cy, size, ring);
     }
 
-    static final Map<PoiType, BufferedImage> BADGES = new ConcurrentHashMap<>();
+    static final Map<String, BufferedImage> BADGES = new ConcurrentHashMap<>();
 
-    /** A type without a game icon, as pixel art of a game icon's size: a disc in its colour, outlined, its glyph within. */
-    static BufferedImage badge(PoiType type) {
-        return BADGES.computeIfAbsent(type, t -> {
-            int size = (int) ICON_PIXELS;
-            var badge = new BufferedImage(size, size, TYPE_INT_ARGB);
-            var g = badge.createGraphics();
-            g.drawImage(disc(size, t.color, OUTLINE), 0, 0, null);
-            g.setRenderingHint(KEY_ANTIALIASING, VALUE_ANTIALIAS_ON);
-            g.setRenderingHint(KEY_STROKE_CONTROL, VALUE_STROKE_PURE);
-            g.setColor(GLYPH);
-            g.setStroke(new BasicStroke(1.2f, CAP_ROUND, JOIN_ROUND));
-            draw(g, glyph(t.name(), PoiType.t("t11")), size / 2.0, size / 2.0, size / 2.0 * 0.62);
-            g.dispose();
-            return badge;
+    /** A type without a game icon, as pixel art of a game icon's size (badges/ holds one picture per type, and the frame). */
+    static BufferedImage badge(String name) {
+        return BADGES.computeIfAbsent(name, n -> {
+            try (var in = PoiIcons.class.getResourceAsStream("badges/" + n + ".png")) {
+                return ImageIO.read(in);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
         });
     }
 
@@ -263,7 +259,7 @@ final class PoiIcons {
         BufferedImage model = GameIcons.get(PoiType.BANK);
         model = model != null ? model : GameIcons.get(PoiType.ANVIL);
         if (model == null) {
-            return disc((int) ICON_PIXELS, FRAME, Color.BLACK);
+            return badge("FRAME");
         }
         return FRAMES.computeIfAbsent(model, m -> {
             var frame = new BufferedImage(m.getWidth(), m.getHeight(), TYPE_INT_ARGB);
@@ -310,34 +306,11 @@ final class PoiIcons {
     static void pixels(Graphics2D g, BufferedImage image, double cx, double cy, double scale) {
         double w = image.getWidth() * scale, h = image.getHeight() * scale;
         var copy = (Graphics2D) g.create();
+        MapView.upright(copy, cx, cy);
         copy.setRenderingHint(KEY_INTERPOLATION, scale >= 1
             ? VALUE_INTERPOLATION_NEAREST_NEIGHBOR : VALUE_INTERPOLATION_BILINEAR);
         copy.drawImage(image, new AffineTransform(scale, 0, 0, scale, round(cx - w / 2), round(cy - h / 2)), null);
         copy.dispose();
-    }
-
-    static final Map<List<Object>, BufferedImage> DISCS = new ConcurrentHashMap<>();
-
-    /**
-     * A pixel-art disc {@code size} pixels across, as the game draws its icons' frames: {@code edge} on its outermost
-     * ring of pixels, {@code fill} within (null: a ring alone). Made once per size and colours.
-     */
-    static BufferedImage disc(int size, Color fill, Color edge) {
-        return DISCS.computeIfAbsent(List.of(size, fill == null ? 0 : fill.getRGB(), edge.getRGB()), k -> {
-            var disc = new BufferedImage(size, size, TYPE_INT_ARGB);
-            double c = (size - 1) / 2.0, r = size / 2.0;
-            for (int x = 0; x < size; x++) {
-                for (int y = 0; y < size; y++) {
-                    double d = hypot(x - c, y - c);
-                    if (d > r - 1 && d <= r) {
-                        disc.setRGB(x, y, edge.getRGB());
-                    } else if (d <= r - 1 && fill != null) {
-                        disc.setRGB(x, y, fill.getRGB());
-                    }
-                }
-            }
-            return disc;
-        });
     }
 
     /** Draws a glyph from {@code poi_glyphs.txt} in units of {@code s} around {@code (x, y)}; the file lists the ops. */

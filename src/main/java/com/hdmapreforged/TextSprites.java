@@ -6,7 +6,7 @@ import java.util.*;
 import java.util.List;
 
 /** Outlined map text, rendered once then copied (each label is nine antialiased strings). Swing thread only. */
-final class TextSprites {
+class TextSprites {
     static final Color OUTLINE = new Color(0, 0, 0, 200);
 
     /** By text, font, colour and device scale (in tenths); at most 1500. */

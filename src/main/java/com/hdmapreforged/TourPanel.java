@@ -112,7 +112,7 @@ final class TourPanel {
         Tour current = Tour.named(tours, actions.editingName());
 
         if (back != null) {
-            panel.add(tip(link(back, this::close, width), "Back to the list"));
+            panel.add(tip(link(back, this::close, width), t("tpBack")));
             panel.add(Box.createVerticalStrut(4));
         }
 
@@ -135,8 +135,9 @@ final class TourPanel {
                 save(tours, name);
             }
         })));
+        String running = actions.runningTour();
         JTextField name = new JTextField(current.name, 14);
-        name.setToolTipText(t("tourName"));
+        name.setToolTipText(current.name.equals(running) ? "Stop the route to rename it" : t("tourName"));
         BigWindow.typable(name);
         Runnable rename = () -> {
             String typed = name.getText().trim();
@@ -144,7 +145,14 @@ final class TourPanel {
             // the focus going after it save once.
             var all = new ArrayList<Tour>(actions.tours());
             var was = all.stream().filter(t -> t.name.equals(current.name)).findFirst().orElse(null);
-            if (!typed.isEmpty() && !typed.equals(current.name) && was != null) {
+            if (was == null && all.isEmpty() && current.stops.isEmpty()) {
+                // None saved yet: the empty route shown is saved under the name typed.
+                all.add(current);
+                was = current;
+            }
+            // Not while this route runs: the focus may go only as Run builds the panel again.
+            if (!typed.isEmpty() && !typed.equals(current.name) && was != null
+                && !current.name.equals(actions.runningTour())) {
                 var others = new ArrayList<Tour>(all);
                 others.remove(was);
                 String unique = Tour.unique(others, typed);
@@ -161,8 +169,8 @@ final class TourPanel {
                 SwingUtilities.invokeLater(rename);
             }
         });
-        // The fastest order's answer finds its route by name: renaming meanwhile would drop it.
-        name.setEnabled(!ordering);
+        // The fastest order's answer and the running route find their route by name: renaming meanwhile would drop it.
+        name.setEnabled(!ordering && !current.name.equals(running));
         name.setMaximumSize(new Dimension(wide, name.getPreferredSize().height));
         JButton delete = button("Delete", () -> {
             tours.remove(current);
@@ -181,8 +189,7 @@ final class TourPanel {
             var stop = current.stops.get(i);
             JPanel line = panel(new BorderLayout(4, 0));
             String label = (i + 1) + ". " + stop.name;
-            line.add(current.repeats(i) ? tip(text(label, ColorScheme.MEDIUM_GRAY_COLOR, width - 114),
-                t("tourRepeat"))
+            line.add(current.repeats(i) ? tip(text(label, ColorScheme.MEDIUM_GRAY_COLOR, width - 114), t("tourRepeat"))
                 : stop.isKind() ? text(label, Color.WHITE, width - 114)
                 : link(label, () -> focus.accept(stop.point), width - 114), BorderLayout.CENTER);
             JPanel moves = panel(new FlowLayout(FlowLayout.RIGHT, 2, 0));
@@ -203,7 +210,6 @@ final class TourPanel {
             panel.add(Box.createVerticalStrut(2));
         }
         JPanel go = row();
-        String running = actions.runningTour();
         if (running != null) {
             go.add(button("Stop " + running, () -> {
                 actions.clearRoute();
@@ -228,8 +234,7 @@ final class TourPanel {
         }
         add(panel, 8, go);
         if (current.stops.size() > 1) {
-            JButton withItems = button(ordering ? "Working it out…" : "Order with current items",
-                () -> order(current, false));
+            JButton withItems = button(ordering ? "Working it out…" : t("tpOrder"), () -> order(current, false));
             withItems.setEnabled(!ordering);
             JButton fastest = button("Order fastest", () -> order(current, true));
             fastest.setEnabled(!ordering);

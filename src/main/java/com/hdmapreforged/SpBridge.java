@@ -7,7 +7,7 @@ import net.runelite.api.coords.*;
 import net.runelite.client.events.*;
 
 /** Talking to the Shortest Path plugin through RuneLite plugin messages (its public message format only). */
-final class SpBridge {
+class SpBridge {
     static final String NAMESPACE = "shortestpath";
     static final String PATH = "path";
     static final String CLEAR = "clear";
@@ -63,7 +63,7 @@ final class SpBridge {
 
     /** A transport or teleport of Shortest Path's route. */
     @RequiredArgsConstructor
-    static final class Jump {
+    static class Jump {
         final WorldPoint from, to;
         final String name;
     }

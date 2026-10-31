@@ -8,12 +8,14 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.*;
 import java.util.regex.*;
+import lombok.EqualsAndHashCode;
 import net.runelite.api.*;
 
 /**
  * The player's levels, finished quests, varbits and varps, taken on the client thread, read from any. What it cannot
  * judge counts as met, so icons are only hidden when a requirement is certainly missing.
  */
+@EqualsAndHashCode(exclude = "usable")
 final class Unlocks {
     /** A varbit condition ("4070=0"), or a varp one with a p ("p4130>11999"). */
     static final Pattern VAR = Pattern.compile("(p?)(\\d+)([=<>&])(\\d+)");
@@ -128,13 +130,6 @@ final class Unlocks {
     /** -1 when too long to be one (a broken line). */
     static int number(String digits) {
         return digits.length() <= 9 ? Integer.parseInt(digits) : -1;
-    }
-
-    boolean sameAs(Unlocks other) {
-        return other != null && levels.equals(other.levels) && quests.equals(other.quests) && started.equals(other.started)
-            && varbits.equals(other.varbits)
-            && varps.equals(other.varps)
-            && lastHome == other.lastHome && lastMinigame == other.lastMinigame;
     }
 
     /** Whether a home or minigame teleport still waits out its cooldown at this minute (since 1970). */

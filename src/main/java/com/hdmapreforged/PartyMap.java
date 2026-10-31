@@ -5,6 +5,7 @@ import static com.hdmapreforged.FriendsWidget.*;
 import static com.hdmapreforged.MapConfig.*;
 import static com.hdmapreforged.HdMapPartyState.*;
 import static com.hdmapreforged.PoiType.t;
+import static java.lang.System.*;
 
 import java.awt.*;
 import java.awt.Point;
@@ -39,10 +40,10 @@ import net.runelite.client.util.*;
  * joined without a user click: "Rejoin party" rejoins the remembered last one.
  */
 @RequiredArgsConstructor(onConstructor_ = @Inject)
-public final class PartyMap {
+public class PartyMap {
     static final String LAST_KEY = "partyLast";
     static final List<Class<? extends WebsocketMessage>> MESSAGES =
-        List.of(HdMapPartyLocation.class, HdMapPartyState.class, HdMapPartyDrop.class);
+        List.of(HdMapPartyLocation.class, HdMapPartyState.class, HdMapPartyDrop.class, HdMapPartyFoe.class);
 
     // The constructor takes these in this order.
     final Client client;
@@ -59,7 +60,7 @@ public final class PartyMap {
     final PartyMembers members = new PartyMembers();
     final Throttle throttle = new Throttle();
     final PartyOverlay overlay = new PartyOverlay(this);
-    /** The overlay's: repaints the views while drops rise. */
+    /** The overlay's on a map without its party list (each list has its own): repaints the views while drops rise. */
     final PartyOverlay.Ticker ticker = new PartyOverlay.Ticker(this::repaint);
     /**
      * Each view's party list; Swing thread only. The plugin makes its views anew at each start, so a stop leaves them
@@ -67,6 +68,8 @@ public final class PartyMap {
      */
     final Map<MapView, FriendsWidget> widgets = new LinkedHashMap<>();
     volatile int myWorld;
+    /** The game's item count, read on the client thread. */
+    volatile int itemCount;
     /** The party this plugin joined for the user, or null. */
     volatile String joinedCode;
     volatile long lastChange = Long.MIN_VALUE / 2;
@@ -76,10 +79,12 @@ public final class PartyMap {
 
     volatile boolean gearChanged = true;
     /** The members as last read without a clash with the websocket thread. */
-    volatile List<Member> lastGroup = Collections.emptyList();
+    volatile List<PartyMembers.Marker> lastGroup = Collections.emptyList();
     final Map<Long, BufferedImage> itemImages = new ConcurrentHashMap<>();
 
     void start(MapView... maps) {
+        // A message the websocket thread was handing over as we stopped can have come in after the clear.
+        members.clear();
         running = true;
         // The party dropped what we shared when we stopped: whole again at once, and theirs asked for anew.
         gearChanged = true;
@@ -95,10 +100,10 @@ public final class PartyMap {
                 repaint();
             });
         }
-        outSince = client.getGameState() == GameState.LOGGED_IN ? null : System.currentTimeMillis();
+        outSince = client.getGameState() == GameState.LOGGED_IN ? null : currentTimeMillis();
         SwingUtilities.invokeLater(() -> {
             for (var view : maps) {
-                var widget = new FriendsWidget(this, view, new MemberPages(this));
+                var widget = new FriendsWidget(this, view, new MemberPages(this), view::repaint);
                 view.addOverlay(overlay);
                 view.menus.add((popup, point) -> contribute(popup, view));
                 view.clickCatcher = (at, projection) -> {
@@ -113,16 +118,16 @@ public final class PartyMap {
                 };
                 var pointing = new MouseAdapter() {
                     public void mouseMoved(MouseEvent e) {
-                        long now = memberAt(e.getPoint(), view.projection());
-                        if (now != hoveredMember) {
-                            hoveredMember = now;
+                        long now = memberAt(e.getPoint(), view);
+                        if (now != widget.hovered) {
+                            widget.hovered = now;
                             view.repaint();
                         }
                     }
 
                     public void mouseExited(MouseEvent e) {
-                        if (hoveredMember >= 0) {
-                            hoveredMember = -1;
+                        if (widget.hovered >= 0) {
+                            widget.hovered = -1;
                             view.repaint();
                         }
                     }
@@ -134,7 +139,7 @@ public final class PartyMap {
             }
             // Leaves a party we rejoined after long logged out, as RuneLite's Party plugin does.
             idleCheck = new Timer(30_000, e -> {
-                if (leaveIdle(joinedCode, party.getPartyPassphrase(), outSince, System.currentTimeMillis())) {
+                if (leaveIdle(joinedCode, party.getPartyPassphrase(), outSince, currentTimeMillis())) {
                     leave();
                 }
             });
@@ -151,6 +156,8 @@ public final class PartyMap {
             sendOffline();
         } catch (RuntimeException e) {
         }
+        // Again after any tick the client thread is in, as unshare(): a location that tick sent is taken back.
+        sendOfflineLater();
         if (config.partyShareGear()) {
             unshare();
         }
@@ -180,11 +187,10 @@ public final class PartyMap {
     @Subscribe
     public void onGameTick(GameTick event) {
         myWorld = client.getWorld();
+        itemCount = client.getItemCount();
     }
 
-    volatile long hoveredMember = -1;
-
-    long memberAt(Point at, Projection projection) {
+    long memberAt(Point at, MapView projection) {
         long best = -1;
         double bestDistance = 14;
         for (var marker : markers()) {
@@ -206,8 +212,7 @@ public final class PartyMap {
     /** The sidebar's and the map's pictures of what members share. */
     BufferedImage skill(int ordinal) {
         var skills = Skill.values();
-        return ordinal < 0 || ordinal >= Math.min(SKILLS, skills.length) ? null
-            : skillIcons.getSkillImage(skills[ordinal], true);
+        return ordinal < 0 || ordinal >= Math.min(SKILLS, skills.length) ? null : skillIcons.getSkillImage(skills[ordinal], true);
     }
 
     BufferedImage sprite(int id) {
@@ -215,9 +220,9 @@ public final class PartyMap {
     }
 
     /** The sidebar's party list. */
-    List<Row> rows() {
+    List<PartyMembers.Marker> rows() {
         // Whether the map draws them or not: the list says where they are.
-        return FriendsWidget.rows(members.markers(System.currentTimeMillis()), groupMembers());
+        return FriendsWidget.rows(members.markers(currentTimeMillis()), groupMembers());
     }
 
     /** Has the maps follow a member. */
@@ -227,15 +232,14 @@ public final class PartyMap {
 
     /** Follows a member clicked: the map keeps them in view as they move. Swing thread. */
     void follow(MapView view, long id) {
-        Supplier<WorldPoint> at = () -> markers().stream().filter(m -> m.id == id).map(m -> m.point).findFirst()
-            .orElse(null);
+        Supplier<WorldPoint> at = () -> markers().stream().filter(m -> m.id == id).map(m -> m.point).findFirst().orElse(null);
         if (at.get() != null) {
             view.follow(at);
         }
     }
 
-    List<Member> groupMembers() {
-        var list = new ArrayList<Member>();
+    List<PartyMembers.Marker> groupMembers() {
+        var list = new ArrayList<PartyMembers.Marker>();
         if (!party.isInParty()) {
             return list;
         }
@@ -254,8 +258,8 @@ public final class PartyMap {
             if (member != null && member.getMemberId() != me) {
                 // RuneLite names a member "<unknown>" until they log in and send their name.
                 String name = member.getDisplayName();
-                list.add(new Member(member.getMemberId(),
-                    name == null || name.startsWith("<") ? null : PartyMembers.clean(name)));
+                list.add(new PartyMembers.Marker(member.getMemberId(),
+                    name == null || name.startsWith("<") ? null : PartyMembers.clean(name), null, 0, null, 0, 1f, false));
             }
         }
         lastGroup = List.copyOf(list);
@@ -263,10 +267,14 @@ public final class PartyMap {
     }
 
     List<PartyMembers.Marker> markers() {
-        return config.partyShowMembers() ? members.markers(System.currentTimeMillis()) : Collections.emptyList();
+        return config.partyShowMembers() ? members.markers(currentTimeMillis()) : Collections.emptyList();
     }
 
     void tick(WorldPoint location, boolean house, int tick) {
+        // Stopped: a tick still on its way sends nothing after the offline.
+        if (!running) {
+            return;
+        }
         if (!members.isEmpty() && tick % 5 == 0) {
             // Markers fade over minutes: every few seconds is enough (animations have their own ticker).
             repaint();
@@ -280,8 +288,11 @@ public final class PartyMap {
                 party.send(state);
             }
         }
+        if (party.isInParty() && config.partyShareFight()) {
+            sendFoe(tick);
+        }
         if (party.isInParty() && config.partyShareLocation() && throttle.shouldSend(location, tick)) {
-            Player player = client.getLocalPlayer();
+            var player = client.getLocalPlayer();
             party.send(new HdMapPartyLocation(location, client.getWorld(),
                 player == null || player.getName() == null ? null : Text.removeTags(player.getName()), house));
             sentOnline = true;
@@ -290,12 +301,12 @@ public final class PartyMap {
 
     @Subscribe
     public void onGameStateChanged(GameStateChanged event) {
-        GameState state = event.getGameState();
+        var state = event.getGameState();
         if (state == GameState.LOGGED_IN) {
             outSince = null;
         } else if (state == GameState.LOGIN_SCREEN) {
             if (outSince == null) {
-                outSince = System.currentTimeMillis();
+                outSince = currentTimeMillis();
             }
             // The next login may be another account: a fresh whole one.
             fresh.set(true);
@@ -315,15 +326,26 @@ public final class PartyMap {
         sentOnline = false;
     }
 
+    /**
+     * The offline on the client thread, after any tick it is in (a location that tick sends goes before it); sentOnline
+     * says whether a location went out at all.
+     */
+    void sendOfflineLater() {
+        clientThread.invokeLater(() -> {
+            try {
+                sendOffline();
+            } catch (RuntimeException e) {
+            }
+        });
+    }
+
     @Subscribe
     public void onConfigChanged(ConfigChanged event) {
         if (!GROUP.equals(event.getGroup()) || !event.getKey().startsWith("party")) {
             return;
         }
-        if ("partyShareLocation".equals(event.getKey()) && !config.partyShareLocation() && party.isInParty()
-            && client.getGameState() == GameState.LOGGED_IN) {
-            party.send(HdMapPartyLocation.offline());
-            sentOnline = false;
+        if ("partyShareLocation".equals(event.getKey()) && !config.partyShareLocation()) {
+            sendOfflineLater();
         }
         if ("partyShareGear".equals(event.getKey()) && party.isInParty()) {
             // Off: the party drops what it showed; on again: a fresh whole one, at the next tick.
@@ -345,7 +367,7 @@ public final class PartyMap {
             return;
         }
         members.update(message.getMemberId(), message.point(), message.world(), message.name(),
-            message.house(), System.currentTimeMillis());
+            message.house(), currentTimeMillis());
         memberDetails(message.getMemberId());
         repaint();
     }
@@ -360,7 +382,7 @@ public final class PartyMap {
         if (!HdMapPartyLocation.plausible(point)) {
             return;
         }
-        if (members.updateFromCore(message.getMemberId(), point, System.currentTimeMillis())) {
+        if (members.updateFromCore(message.getMemberId(), point, currentTimeMillis())) {
             memberDetails(message.getMemberId());
             repaint();
         }
@@ -368,20 +390,18 @@ public final class PartyMap {
 
     @Subscribe
     public void onUserJoin(UserJoin event) {
-        sendWhole();
+        onUserSync(null);
+        repaint();
     }
 
     /** A member (re)started and asks for everyone's: sent whole, the location too. */
     @Subscribe
     public void onUserSync(UserSync event) {
-        sendWhole();
-    }
-
-    void sendWhole() {
         throttle.force();
-        gearChanged = true;
-        // The next goes whole (read on the client thread, which alone has sent).
+        // The next goes whole (read on the client thread, which alone has sent); set before gearChanged, so a tick that
+        // takes gearChanged also sees it.
         wholeNext.set(true);
+        gearChanged = true;
     }
 
     @Subscribe
@@ -400,7 +420,7 @@ public final class PartyMap {
     @Subscribe
     public void onHdMapPartyState(HdMapPartyState message) {
         if (!isLocal(message.getMemberId())) {
-            members.state(message.getMemberId(), message, System.currentTimeMillis());
+            members.state(message.getMemberId(), message, currentTimeMillis());
             repaint();
         }
     }
@@ -441,6 +461,35 @@ public final class PartyMap {
         return itemManager.getItemComposition(itemManager.canonicalize(item)).isTradeable();
     }
 
+    /** The fight last sent (NPC, name, health), and when: an unchanged one goes again every {@link #FOE_TICKS}. */
+    String sentFoe = "";
+    int foeTick;
+    static final int FOE_TICKS = 20;
+
+    /** The NPC we fight (one with a combat level: not a banker one talks to) and its health, when either changed. */
+    void sendFoe(int tick) {
+        var player = client.getLocalPlayer();
+        var target = player == null ? null : player.getInteracting();
+        NPC npc = target instanceof NPC && ((NPC) target).getCombatLevel() > 0 ? (NPC) target : null;
+        String foe = npc == null ? "" : npc.getId() + "|" + npc.getName() + "|" + npc.getHealthRatio() + "|"
+            + npc.getHealthScale();
+        if (foe.equals(sentFoe) && (npc == null || tick - foeTick < FOE_TICKS)) {
+            return;
+        }
+        sentFoe = foe;
+        foeTick = tick;
+        party.send(npc == null ? HdMapPartyFoe.none() : new HdMapPartyFoe(npc.getId(),
+            npc.getName() == null ? null : Text.removeTags(npc.getName()), npc.getHealthRatio(), npc.getHealthScale()));
+    }
+
+    @Subscribe
+    public void onHdMapPartyFoe(HdMapPartyFoe message) {
+        if (!isLocal(message.getMemberId())) {
+            members.foe(message.getMemberId(), message, currentTimeMillis());
+            repaint();
+        }
+    }
+
     @Subscribe
     public void onHdMapPartyDrop(HdMapPartyDrop message) {
         int item = message.item();
@@ -451,10 +500,15 @@ public final class PartyMap {
         clientThread.invoke(() -> {
             if (item < client.getItemCount() && running) {
                 long value = itemManager.getItemPriceWithSource(item, false) * message.quantity();
-                // An untradeable one shows by name, as it has no price.
-                String name = tradeable(item) ? null : itemManager.getItemComposition(item).getName();
+                // Its name for the session page's hover; an untradeable one shows by name, as it has no price.
+                String named = itemManager.getItemComposition(item).getName();
+                if (itemNames.size() > 512) {
+                    itemNames.clear();
+                }
+                itemNames.put(item, named);
+                String name = tradeable(item) ? null : named;
                 members.loot(message.getMemberId(), new PartyMembers.Loot(item, message.quantity(), value,
-                    System.currentTimeMillis(), name));
+                    currentTimeMillis(), name));
                 repaint();
             }
         });
@@ -514,7 +568,7 @@ public final class PartyMap {
         int[] ids = new int[quantities.length];
         Arrays.fill(ids, -1);
         var items = client.getItemContainer(container);
-        Item[] all = items == null ? new Item[0] : items.getItems();
+        var all = items == null ? new Item[0] : items.getItems();
         for (int k = 0; k < Math.min(all.length, ids.length); k++) {
             ids[k] = all[k].getId();
             quantities[k] = all[k].getQuantity();
@@ -522,7 +576,18 @@ public final class PartyMap {
         return ids;
     }
 
+    /** Shared drops' item names, read on the client thread as they come: the session page shows them on hover. */
+    final Map<Integer, String> itemNames = new ConcurrentHashMap<>();
+
+    String itemName(int id) {
+        return itemNames.get(id);
+    }
+
     BufferedImage item(int id, int quantity) {
+        // Not one of the game's items (a member's state is only held to MAX_ITEM): no picture is asked for.
+        if (itemCount > 0 && id >= itemCount) {
+            return null;
+        }
         long key = (long) id << 32 | quantity;
         if (itemImages.size() > 512 && !itemImages.containsKey(key)) {
             itemImages.clear();
@@ -573,7 +638,7 @@ public final class PartyMap {
             var member = party.getMemberById(memberId);
             if (member != null) {
                 members.name(memberId, member.getDisplayName());
-                BufferedImage avatar = member.getAvatar();
+                var avatar = member.getAvatar();
                 if (avatar != null) {
                     members.avatar(memberId, avatar);
                 }
@@ -601,7 +666,7 @@ public final class PartyMap {
 
     /** A member's experience drops rising now. */
     List<PartyMembers.Drop> xp(long id) {
-        return members.drops(id, System.currentTimeMillis());
+        return members.drops(id, currentTimeMillis());
     }
 
     void contribute(JPopupMenu popup, MapView view) {
@@ -634,30 +699,22 @@ public final class PartyMap {
 
     /** Rejoins the last party. */
     void join(Component view) {
-        String code = lastParty();
-        if (code == null) {
+        String code = lastParty(), current = party.getPartyPassphrase();
+        long now = currentTimeMillis();
+        if (code == null || code.equals(current)) {
             return;
         }
-        long now = System.currentTimeMillis();
-        String current = party.getPartyPassphrase();
-        switch (PartyMapRules.join(code, client.getGameState() == GameState.LOGGED_IN, current, lastChange, now)) {
-            case ALREADY_IN:
-            case INVALID_CODE:
-                return;
-            case NOT_LOGGED_IN:
-                tell(view, t("dLogInFirst"));
-                return;
-            case TOO_SOON:
-                tell(view, t("dTooSoon"));
-                return;
-            case CONFIRM_LEAVE_OTHER:
-                if (JOptionPane.showConfirmDialog(view, t("dLeaveOther"),
-                    "Reimagined World Map", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) {
-                    return;
-                }
-                break;
-            default:
-                break;
+        if (client.getGameState() != GameState.LOGGED_IN) {
+            tell(view, t("dLogInFirst"));
+            return;
+        }
+        if (now - lastChange < CHANGE_COOLDOWN_MILLIS) {
+            tell(view, t("dTooSoon"));
+            return;
+        }
+        if (current != null && JOptionPane.showConfirmDialog(view, t("dLeaveOther"), t("pmTitle"),
+            JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) {
+            return;
         }
         lastChange = now;
         joinedCode = code;
@@ -665,11 +722,11 @@ public final class PartyMap {
     }
 
     static void tell(Component to, String message) {
-        JOptionPane.showMessageDialog(to, message, "Reimagined World Map", JOptionPane.INFORMATION_MESSAGE);
+        JOptionPane.showMessageDialog(to, message, t("pmTitle"), JOptionPane.INFORMATION_MESSAGE);
     }
 
     void leave() {
-        lastChange = System.currentTimeMillis();
+        lastChange = currentTimeMillis();
         joinedCode = null;
         party.changeParty(null);
     }

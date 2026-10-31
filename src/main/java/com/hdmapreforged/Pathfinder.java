@@ -10,7 +10,6 @@ import static com.hdmapreforged.Tiles.*;
 
 import com.hdmapreforged.Route.*;
 import java.io.*;
-import java.nio.charset.*;
 import java.util.*;
 import java.util.function.*;
 import java.util.stream.*;
@@ -62,28 +61,22 @@ final class Pathfinder {
         this.sea = sea;
         var edges = new ArrayList<Edge>();
         var atShortcuts = new ArrayList<ShortcutPassage>();
-        var ways = ShortcutPassage.allWays();
+        var ways = new ArrayList<String[]>();
         // The map version's passages as its build worked them out (BuildPassages), in its order, which breaks ties in
-        // the search (a route.zip made before passages.tsv is not used: HdMapReforgedPlugin.useVersion). The Agility shortcuts among them are added only
-        // to requests whose player meets one of their ways.
-        table(DIR + "passages.tsv", c -> {
-            int at = parse(c[1]), to = parse(c[2]);
-            if (c[0].equals("S")) {
-                shortcutStarts.put(at, 0);
-            } else if (c[0].equals("C")) {
-                closedSteps.put(at, Integer.parseInt(c[2]));
-            } else if (c[0].equals("P") && min(at, to) >= 0) {
-                var e = new Edge(at, to, Edge.Kind.valueOf(c[3]), c[7], c[6].equals("?") ? UNKNOWN_NEEDS
-                    : c[6].isEmpty() ? null : c[6], Integer.parseInt(c[4]));
-                if (c[5].isEmpty()) {
-                    edges.add(e);
-                } else {
-                    atShortcuts.add(new ShortcutPassage(e, Arrays.stream(ints(c[5])).mapToObj(ways::get)
-                        .collect(toUnmodifiableList())));
+        // the search (a route.zip made before passages.tsv is not used: HdMapReforgedPlugin.useVersion). The Agility
+        // shortcuts among them (their ways: the W rows, first) are added only to requests whose player meets one.
+        InputStream in = RouteFiles.open(DIR + "passages.tsv");
+        try {
+            RouteFiles.rows(in == null ? InputStream.nullInputStream() : in, 0, c -> {
+                try {
+                    passage(c, edges, atShortcuts, ways);
+                } catch (RuntimeException e) {
+                    // That row only.
                 }
-            }
-            return null;
-        });
+            });
+        } catch (IOException e) {
+            // Those read so far.
+        }
         shortcutPassages = Collections.unmodifiableList(atShortcuts);
         passages = Collections.unmodifiableList(edges);
         passagesByOrigin = EdgeIndex.of(edges, 0, false);
@@ -92,27 +85,33 @@ final class Pathfinder {
         walkingPassages = edges.stream().filter(e -> shortCut(e, WALK)).collect(toUnmodifiableList());
     }
 
-    /** Lists the planner and its texts use (the map version's lists.tsv): by name, its items; the first of a name. */
-    static final Table<Map<String, List<String>>> LISTS = new Table<>(() -> rows(
-        DIR + "lists.tsv").stream().collect(toMap(c -> c[0], c -> List.of(c).subList(1, c.length),
-        (a, b) -> a)));
+    void passage(String[] c, List<Edge> edges, List<ShortcutPassage> atShortcuts, List<String[]> ways) {
+        if (c[0].equals("W")) {
+            if (c.length > 5) {
+                ways.add(Arrays.copyOfRange(c, 1, 5));
+            }
+            return;
+        }
+        int at = parse(c[1]), to = parse(c[2]);
+        if (c[0].equals("S")) {
+            shortcutStarts.put(at, 0);
+        } else if (c[0].equals("C")) {
+            closedSteps.put(at, Integer.parseInt(c[2]));
+        } else if (c[0].equals("P") && min(at, to) >= 0) {
+            var e = new Edge(at, to, Edge.Kind.valueOf(c[3]), c[7], c[6].equals("?") ? UNKNOWN_NEEDS
+                : c[6].isEmpty() ? null : c[6], Integer.parseInt(c[4]));
+            if (c[5].isEmpty()) {
+                edges.add(e);
+            } else {
+                atShortcuts.add(new ShortcutPassage(e, Arrays.stream(ints(c[5])).mapToObj(ways::get)
+                    .collect(toUnmodifiableList())));
+            }
+        }
+    }
 
-    /** A list by its name; empty while the map version has none. */
+    /** A list of the map version's by its name; empty while it has none. */
     static List<String> list(String name) {
-        return LISTS.get().getOrDefault(name, List.of());
-    }
-
-    /** A list's items as {@code parse} reads them; an item it cannot read (throws, gives null) is left out. */
-    static <T> List<T> list(String name, Function<String, T> parse) {
-        return each(list(name), parse);
-    }
-
-    /** A list of "key=value" items as a map, each value as {@code parse} reads it; the first of a key. */
-    static <T> Map<String, T> pairs(String list, Function<String, T> parse) {
-        return list(list, item -> {
-            var p = item.split("=", 2);
-            return Map.entry(p[0], parse.apply(p[1]));
-        }).stream().collect(toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a));
+        return RouteFiles.tables().list(name);
     }
 
     /** Whether the step from {@code node} by (dx, dy) is one a gates.tsv row closes. */
@@ -134,73 +133,37 @@ final class Pathfinder {
      * leads out of; when not, {@code way} saw each tile walked to once.
      */
     static boolean reaches(CollisionMap map, int node, IntPredicate way, int limit) {
+        return flood(map, node, way, limit, 4) != -1;
+    }
+
+    /**
+     * Walks out from a tile, nearest first, by the first {@code steps} of {@link #DX} (4: straight only, 8: diagonals
+     * too): the first tile {@code way} takes; -2 once {@code limit} tiles are queued; -1 when every tile was tried.
+     */
+    static int flood(CollisionMap map, int node, IntPredicate way, int limit, int steps) {
         // Run for many tiles: no boxing.
-        int[] queue = new int[limit];
-        var seen = new IntMap(2 * limit);
+        int[] queue = new int[min(limit, 1 << 16)];
+        var seen = new IntMap(min(2 * limit, 1 << 17));
         queue[0] = node;
         seen.put(node, 0);
         for (int head = 0, tail = 1; head < tail; head++) {
             int at = queue[head];
             if (way.test(at)) {
-                return true;
+                return at;
             }
-            for (int d = 0; d < 4; d++) {
+            for (int d = 0; d < steps; d++) {
                 int next = pack(x(at) + DX[d], y(at) + DY[d], z(at));
                 if (map.canStep(x(at), y(at), z(at), DX[d], DY[d]) && seen.get(next) == MISSING) {
                     seen.put(next, 0);
                     if (++tail >= limit) {
-                        return true;
+                        return -2;
                     }
+                    queue = tail <= queue.length ? queue : Arrays.copyOf(queue, tail * 2);
                     queue[tail - 1] = next;
                 }
             }
         }
-        return false;
-    }
-
-    /** A bundled table's lines split at tabs, without {@code #} comments; what could be read. */
-    static List<String[]> rows(String resource) {
-        var rows = new ArrayList<String[]>();
-        InputStream in = RouteFiles.open(resource);
-        if (in != null) {
-            try {
-                rows(in, 0, rows::add);
-            } catch (IOException e) {
-                // Those read so far.
-            }
-        }
-        return rows;
-    }
-
-    /** Each row of a bundled table as {@code parse} reads it; a row it cannot read (throws, gives null) is left out. */
-    static <T> List<T> table(String resource, Function<String[], T> parse) {
-        return each(rows(resource), parse);
-    }
-
-    static <I, T> List<T> each(List<I> items, Function<I, T> parse) {
-        var read = new ArrayList<T>();
-        for (var item : items) {
-            try {
-                T row = parse.apply(item);
-                if (row != null) {
-                    read.add(row);
-                }
-            } catch (RuntimeException e) {
-                // That one only.
-            }
-        }
-        return Collections.unmodifiableList(read);
-    }
-
-    /** Each line but {@code #} comments, split as {@code line.split("\t", limit)} does; closes {@code in}. */
-    static void rows(InputStream in, int limit, Consumer<String[]> each) throws IOException {
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
-            for (String line = reader.readLine(); line != null; line = reader.readLine()) {
-                if (!line.startsWith("#")) {
-                    each.accept(line.split("\t", limit));
-                }
-            }
-        }
+        return -1;
     }
 
     /** A cell's space-separated integers ("2920 4700" {@literal ->} {2920, 4700}). */
@@ -375,8 +338,10 @@ final class Pathfinder {
                 return sailed;
             }
             Route walked = sailed.keptOut && !route.keptOut ? route.withKeptOut(true) : route;
-            // Out of reach only if the boat's search tried everything too (not when it stopped at a limit).
-            return sailed.outcome == CANCELLED || sailed.exhausted ? walked : walked.withExhausted(false).withReached(null);
+            // Out of reach only if the boat's search tried everything too (not when it stopped at a limit); then its
+            // proof is the one kept (its ways are the walk's and more; the walk's own holds only without the boat).
+            return sailed.outcome == CANCELLED ? walked : sailed.exhausted ? walked.withReached(sailed.reached)
+                : walked.withExhausted(false).withReached(null);
         }
         return route;
     }
@@ -670,8 +635,7 @@ final class Pathfinder {
 
     List<Step> steps(NodeTable nodes, List<Edge> all, int startOffset, int end, int target, boolean avoid) {
         // The walk drawn as the game walks it keeps to the steps the search kept to: no shut gate, no Wilderness.
-        Shut shut = (x, y, z, dx, dy) -> closed(pack(x, y, z), dx, dy)
-            || avoid && wilderness(pack(x + dx, y + dy, z));
+        Shut shut = (x, y, z, dx, dy) -> closed(pack(x, y, z), dx, dy) || avoid && wilderness(pack(x + dx, y + dy, z));
         var reversed = new ArrayList<Step>();
         var run = new ArrayList<Integer>();
         int node = end;
@@ -683,7 +647,7 @@ final class Pathfinder {
                 Edge e = all.get(via);
                 int from = parent >= 0 ? parent : node;
                 reversed.add(new Step(Step.Kind.valueOf(e.kind.name()), new int[]{from, node}, e.name,
-                    e.detail, e.time, 0, List.of(), e.category));
+                    e.detail, e.time, new int[0], List.of(), e.category, e.said));
                 run.clear();
             }
             if (parent < 0) {
@@ -706,17 +670,47 @@ final class Pathfinder {
             int[] game = walk.kind != Step.Kind.WALK ? null : path(map, shut, walk.first(), jump == null ? beside
                 : all.stream().filter(e -> e.from >= 0 && e.to == jump.last() && Objects.equals(e.name, jump.name))
                 .mapToInt(e -> e.from).toArray());
-            if (game != null && game.length <= walk.points.length) {
-                int doors = (int) IntStream.range(1, game.length).filter(k -> map.door(x(game[k - 1]), y(game[k - 1]),
-                    z(game[k]), x(game[k]) - x(game[k - 1]), y(game[k]) - y(game[k - 1]))).count();
+            // Not onto an obstacle the planned walk went round: in the game it blocks until it is cut.
+            if (game != null && game.length <= walk.points.length
+                && !newObstacle(map, game, walk.points, 0, walk.points.length - 1)) {
+                int[] doors = IntStream.range(1, game.length).filter(k -> map.door(x(game[k - 1]), y(game[k - 1]),
+                    z(game[k]), x(game[k]) - x(game[k - 1]), y(game[k]) - y(game[k - 1]))).toArray();
                 reversed.set(i - 1, new Step(Step.Kind.WALK, game, null, walk.detail,
-                    walk.cost * (game.length - 1) / (walk.points.length - 1), doors, walk.obstacles, null));
+                    walk.cost * (game.length - 1) / (walk.points.length - 1), doors, walk.obstacles, null, Said.NONE));
                 if (jump != null) {
                     jump.points[0] = game[game.length - 1];
                 }
             }
         }
         return reversed;
+    }
+
+    /**
+     * A sail's blocks along straight lines: the 8-way search goes diagonal, then straight, a corner where none is needed.
+     * From each block, a line of blocks to the farthest one in sight (no land, no sea harder than the sail crosses).
+     */
+    int[] straightSail(int[] blocks) {
+        int most = Arrays.stream(blocks).map(b -> sea.level(cellX(b), cellY(b))).max().orElse(0);
+        var out = new ArrayList<Integer>(List.of(blocks[0]));
+        for (int i = 0, j; i < blocks.length - 1; i = j) {
+            for (j = blocks.length - 1; j > i + 1 && !inSight(blocks[i], blocks[j], most, 4); j--) {
+            }
+            int ax = cellX(blocks[i]), ay = cellY(blocks[i]), dx = cellX(blocks[j]) - ax, dy = cellY(blocks[j]) - ay;
+            int steps = max(abs(dx), abs(dy));
+            for (int k = 1; k <= steps; k++) {
+                out.add(sea(ax + (int) round(dx * k / (double) steps), ay + (int) round(dy * k / (double) steps)));
+            }
+        }
+        return out.stream().mapToInt(Integer::intValue).toArray();
+    }
+
+    /** Whether the line from block a to b, looked at {@code per} times a block, crosses only sea up to level most. */
+    boolean inSight(int a, int b, int most, int per) {
+        int ax = cellX(a), ay = cellY(a), dx = cellX(b) - ax, dy = cellY(b) - ay, n = max(abs(dx), abs(dy)) * per;
+        return IntStream.rangeClosed(0, n).allMatch(k -> {
+            int level = sea.level(ax + (int) round(dx * k / (double) n), ay + (int) round(dy * k / (double) n));
+            return level >= 0 && level <= most;
+        });
     }
 
     /** {@code run} is collected backwards. */
@@ -733,25 +727,28 @@ final class Pathfinder {
             if (!sailing) {
                 points = straighten(map, shut, follow(map, shut, points));
                 for (int point : points) {
-                    String obstacle = map.obstacle(point);
+                    var obstacle = map.obstacle(point);
                     if (obstacle != null) {
-                        obstacles.add(new Obstacle(point, obstacle));
-                        if (detail.indexOf(obstacle) < 0) {
-                            detail.append(detail.length() > 0 ? "; " : "").append(obstacle);
+                        obstacles.add(obstacle);
+                        if (detail.indexOf(obstacle.text) < 0) {
+                            detail.append(detail.length() > 0 ? "; " : "").append(obstacle.text);
                         }
                     }
                 }
+            } else {
+                points = straightSail(points);
             }
             // Doors on the walk as drawn.
-            int doors = 0;
+            var doors = IntStream.builder();
             for (int i = 1; i < points.length; i++) {
                 int a = points[i - 1], b = points[i], dx = x(b) - x(a), dy = y(b) - y(a);
                 if (!isSea(a) && (dx == 0 || dy == 0) && map.door(x(a), y(a), z(a), dx, dy)) {
-                    doors++;
+                    doors.add(i);
                 }
             }
             reversed.add(new Step(sailing ? Step.Kind.SAIL : Step.Kind.WALK, points, null,
-                sailing ? hazards(points) : detail.length() > 0 ? detail.toString() : null, cost, doors, obstacles, null));
+                sailing ? hazards(points) : detail.length() > 0 ? detail.toString() : null, cost,
+                doors.build().toArray(), obstacles, null, Said.NONE));
         }
         // Only the last point stays.
         run.subList(0, max(0, run.size() - 1)).clear();

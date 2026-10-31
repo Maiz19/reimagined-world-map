@@ -10,7 +10,6 @@ import java.awt.image.*;
 import java.util.*;
 import java.util.List;
 import java.util.function.*;
-import net.runelite.api.coords.*;
 import com.hdmapreforged.MapData.Icon;
 
 /**
@@ -22,7 +21,7 @@ import com.hdmapreforged.MapData.Icon;
  * above ground and where the game's map draws a place's floors flat (Keldagrim), upper floors only their own.
  */
 @RequiredArgsConstructor
-final class IconLayer implements MapView.Overlay, MapView.HitLayer {
+class IconLayer implements MapView.Overlay, MapView.HitLayer {
     static final double ICON_PIXELS = 15;
 
     final MapView view;
@@ -55,7 +54,7 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
      * enlarges its most detailed tiles), in whole times the game's 15 pixels: the nearest, at least once. Pixel art
      * stays even: at 20 a 15-pixel icon had every third pixel doubled, and made smaller it was smoothed.
      */
-    double drawnSize(Projection projection) {
+    double drawnSize(MapView projection) {
         return drawnSize(projection.zoom(), size.getAsInt());
     }
 
@@ -69,8 +68,7 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
         return (x >> 6) << 16 | (y >> 6) & 0xffff;
     }
 
-    List<List<Icon>> near(Map<Integer, List<Icon>> grid, Projection p,
-        double left, double top, double right, double bottom) {
+    List<List<Icon>> near(Map<Integer, List<Icon>> grid, MapView p, double left, double top, double right, double bottom) {
         double scale = p.screenX(1) - p.screenX(0), x0 = p.screenX(0), y0 = p.screenY(0);
         int minX = (int) floor((left - x0) / scale) - 1, maxX = (int) ceil((right - x0) / scale) + 1;
         int maxY = (int) ceil((y0 - top) / scale) + 1, minY = (int) floor((y0 - bottom) / scale) - 1;
@@ -136,7 +134,7 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
     }
 
     /** {@code last}: the hovered and selected, drawn after the rest so none lies over them. */
-    void paintLarger(Graphics2D g, Projection projection, List<Icon> last) {
+    void paintLarger(Graphics2D g, MapView projection, List<Icon> last) {
         if (!showsAny(projection)) {
             return;
         }
@@ -145,11 +143,10 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
         if (px <= 0) {
             return;
         }
-        double r = drawn / 2 + 1;
+        double r = drawn / 2 + 1 + projection.margin();
         madeNow = 0;
         later = false;
-        for (var list : near(drawnByRegion, projection, -r, -r, projection.width() + r,
-            projection.height() + r)) {
+        for (var list : near(drawnByRegion, projection, -r, -r, projection.width() + r, projection.height() + r)) {
             for (var icon : list) {
                 double sx = projection.screenX(icon.drawn.getX()), sy = projection.screenY(icon.drawn.getY());
                 if (!(sx < -r - 2 || sy < -r - 2 || sx > projection.width() + r + 2 || sy > projection.height() + r + 2
@@ -166,7 +163,7 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
         }
     }
 
-    void paintIcon(Graphics2D g, Projection projection, Icon icon, int px, double drawn) {
+    void paintIcon(Graphics2D g, MapView projection, Icon icon, int px, double drawn) {
         if (!onView(icon, projection) || hidden(icon)) {
             return;
         }
@@ -175,8 +172,10 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
             return;
         }
         var c = center(icon, projection);
-        g.drawImage(sprite, (int) round(c.getX() - sprite.getWidth() / 2.0),
-            (int) round(c.getY() - sprite.getHeight() / 2.0), null);
+        var back = MapView.upright(g, c.getX(), c.getY());
+        g.drawImage(sprite, (int) round(c.getX() - sprite.getWidth() / 2.0), (int) round(c.getY() - sprite.getHeight() / 2.0),
+            null);
+        // The quest's status at its lower right, upright with it.
         Color dot = view.filter.questStatus ? quest(icon) : null;
         if (dot != null) {
             var spot = PlayerMarker.circle(c.getX() + drawn * 0.35, c.getY() + drawn * 0.35, max(3, drawn * 0.18));
@@ -184,6 +183,9 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
             g.fill(spot);
             g.setColor(Color.BLACK);
             g.draw(spot);
+        }
+        if (back != null) {
+            g.setTransform(back);
         }
     }
 
@@ -249,7 +251,7 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
         return pow(2, zoom - tileLevel(zoom));
     }
 
-    boolean shows(Icon icon, Projection projection) {
+    boolean shows(Icon icon, MapView projection) {
         return showsAny(projection) && onView(icon, projection) && !hidden(icon);
     }
 
@@ -259,52 +261,53 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
         return icon.poi.type != QUEST_START || unlocks == null ? null : unlocks.questColor(icon.poi.name);
     }
 
-    /** Its kind hidden in the Icons panel, or a finished quest's start hidden. */
+    /** Its kind hidden in the Icons panel, a finished quest's start hidden, or (Only what I can use) one not usable. */
     boolean hidden(Icon icon) {
-        return view.iconsOff.contains(icon.toggle) || quest(icon) == Color.GREEN && view.filter.hideCompleted;
+        return view.iconsOff.contains(icon.toggle) || view.filter.hideCompleted && quest(icon) == Color.GREEN
+            // As our icons: also shown where what stands at the same place is usable (a teleport landing there).
+            || view.filter.onlyUsable && !view.usable(icon.poi, true)
+                && icon.poi.nearby().stream().noneMatch(near -> view.usable(near, true));
     }
 
-    boolean showsAny(Projection projection) {
+    boolean showsAny(MapView projection) {
         // From tile level 0 on.
         return projection.map() != null && tileLevel(projection.zoom()) >= 0;
     }
 
     /** On the map in view and its floor, or on the ground floor's view a floor drawn flat on it. */
-    static boolean onView(Icon icon, Projection projection) {
+    static boolean onView(Icon icon, MapView projection) {
         var map = projection.map();
-        return (map.id == BaseMap.FULL || icon.map == map)
-            && (icon.drawn.getPlane() == projection.plane()
+        return (map.id == BaseMap.FULL || icon.map == map) && (icon.drawn.getPlane() == projection.plane()
                 // Ground floor tiles show the floors above; underground only where the game's map draws a place's
                 // floors flat (Keldagrim's houses), floors on one spot being other places elsewhere.
                 || projection.plane() == 0 && (icon.drawn.getY() < MapView.UNDERGROUND_Y || icon.flat));
     }
 
     /** {@link #covers} for a frame, the settings read once. */
-    Predicate<Poi> covers(Projection projection) {
+    Predicate<Poi> covers(MapView projection) {
         if (!showsAny(projection)) {
             return poi -> false;
         }
         return poi -> {
             var icon = covering.get(poi);
-            return icon != null && !view.iconsOff.contains(icon.toggle) && GameIcons.element(icon.element) != null
+            return icon != null && !hidden(icon) && GameIcons.element(icon.element) != null
                 && onView(icon, projection);
         };
     }
 
-    static Point2D center(Icon icon, Projection projection) {
+    static Point2D center(Icon icon, MapView projection) {
         // -1.5 pixels at the tile level's own size.
         double offset = -1.5 * scale(projection.zoom());
-        return new Point2D.Double(projection.screenX(icon.drawn.getX()) + offset,
-            projection.screenY(icon.drawn.getY()) + offset);
+        return new Point2D.Double(projection.screenX(icon.drawn.getX()) + offset, projection.screenY(icon.drawn.getY()) + offset);
     }
 
-    public Poi hit(Point point, Projection projection) {
+    public Poi hit(Point point, MapView projection) {
         var icon = iconAt(point, projection);
         return icon == null ? null : icon.poi;
     }
 
     /** The game icon under a point, nearest middle wins; null if none. */
-    Icon iconAt(Point point, Projection projection) {
+    Icon iconAt(Point point, MapView projection) {
         if (!showsAny(projection)) {
             return null;
         }
@@ -315,8 +318,8 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
             point.x + reach + 8, point.y + reach + 8)) {
             for (var icon : list) {
                 double sx = projection.screenX(icon.drawn.getX()), sy = projection.screenY(icon.drawn.getY());
-                if (abs(sx - point.x) > reach + 4 || abs(sy - point.y) > reach + 4
-                    || !onView(icon, projection) || hidden(icon)) {
+                if (abs(sx - point.x) > reach + 4 || abs(sy - point.y) > reach + 4 || !onView(icon, projection) || hidden(icon)
+                    || GameIcons.element(icon.element) == null) {
                     continue;
                 }
                 var c = center(icon, projection);
@@ -330,12 +333,12 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
         return best;
     }
 
-    public Point2D labelAnchor(Poi poi, Projection projection) {
+    public Point2D labelAnchor(Poi poi, MapView projection) {
         var c = iconCenter(poi, projection);
         return c == null ? null : new Point2D.Double(c.getX(), c.getY() + drawnSize(projection) / 2 + 5);
     }
 
-    public Point2D iconCenter(Poi poi, Projection projection) {
+    public Point2D iconCenter(Poi poi, MapView projection) {
         var icon = created.get(poi);
         if (icon == null && covers(projection).test(poi)) {
             icon = covering.get(poi);
@@ -344,7 +347,7 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
     }
 
     /** Draws the game's sprites once read from the client; then rings the hovered and selected. */
-    public void paint(Graphics2D g, Projection projection) {
+    public void paint(Graphics2D g, MapView projection) {
         var ofSelected = byPoi.getOrDefault(view.selected(), Collections.emptyList());
         var ringed = new ArrayList<>(byPoi.getOrDefault(view.hovered(), Collections.emptyList()));
         // The selected's last, on top. A passage's is the game's icon for it, which may be the one hovered.
@@ -354,7 +357,8 @@ final class IconLayer implements MapView.Overlay, MapView.HitLayer {
             paintLarger(g, projection, ringed);
         }
         // A pixel ring following the icon's outline, enlarged with it: yellow round the selected, white round the hovered.
-        double times = max(1, round(drawnSize(projection) / ICON_PIXELS)), r = (ICON_PIXELS / 2 + 4) * times;
+        double times = max(1, round(drawnSize(projection) / ICON_PIXELS));
+        double r = (ICON_PIXELS / 2 + 4) * times + projection.margin();
         for (var icon : ringed) {
             if (!shows(icon, projection)) {
                 continue;

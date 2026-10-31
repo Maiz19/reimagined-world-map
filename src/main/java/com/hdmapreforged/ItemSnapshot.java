@@ -14,11 +14,6 @@ final class ItemSnapshot {
     /** Compiled once: a split on a pattern compiles it on every call, and requests check hundreds of columns. */
     static final Pattern ALL = Pattern.compile("&&");
     static final Pattern ANY = Pattern.compile("\\|\\|");
-    static final int AIR = 556, WATER = 555, EARTH = 557, FIRE = 554;
-    /** Combination runes (steam, mist, dust, smoke, mud, lava) by id, with the two runes each counts as. */
-    static final RouteFiles.Table<Map<Integer, int[]>> COMBINATIONS = new RouteFiles.Table<>(() -> Pathfinder.list(
-        "combination rune ids", Pathfinder::ints).stream().filter(c -> c.length > 2)
-        .collect(Collectors.toMap(c -> c[0], c -> new int[]{c[1], c[2]}, (a, b) -> a)));
 
     static final ItemSnapshot NONE = new ItemSnapshot(Map.of(), Set.of());
     static final ItemSnapshot EVERYTHING = new ItemSnapshot(Map.of(), Set.of());
@@ -54,7 +49,7 @@ final class ItemSnapshot {
 
     static void add(Map<Integer, Long> into, int id, long quantity) {
         into.merge(id, quantity, Long::sum);
-        var parts = COMBINATIONS.get().get(id);
+        var parts = RouteFiles.tables().combinations.get(id);
         if (parts != null) {
             for (int part : parts) {
                 into.merge(part, quantity, Long::sum);
@@ -63,21 +58,8 @@ final class ItemSnapshot {
     }
 
     static Set<Integer> runesFromWeapon(String name) {
-        var runes = new HashSet<Integer>();
-        String n = name == null ? "" : name.toLowerCase(Locale.ROOT);
-        if (!n.contains("staff") && !n.contains("tome of") && !n.contains("wand") || n.contains("(empty)")
-            || n.contains("uncharged")) {
-            return runes;
-        }
-        // The words that give each rune.
-        var words = Pathfinder.list("staff runes");
-        int[] ids = {AIR, WATER, EARTH, FIRE};
-        for (int i = 0; i < Math.min(ids.length, words.size()); i++) {
-            if (Arrays.stream(words.get(i).split(" ")).anyMatch(w -> !w.isEmpty() && n.contains(w))) {
-                runes.add(ids[i]);
-            }
-        }
-        return runes;
+        return name == null ? new HashSet<>() : RouteFiles.tables().rules("staff rune rules", name, true).stream()
+            .map(Integer::valueOf).collect(Collectors.toSet());
     }
 
     /**
@@ -104,8 +86,7 @@ final class ItemSnapshot {
                         // One then.
                     }
                 }
-                Integer id = token.length() <= 9 && token.chars().allMatch(Character::isDigit) ? Integer.valueOf(token)
-                    : null;
+                Integer id = Requirements.isNumber(token) ? Integer.valueOf(token) : null;
                 if (id == null) {
                     any = true;
                     continue;

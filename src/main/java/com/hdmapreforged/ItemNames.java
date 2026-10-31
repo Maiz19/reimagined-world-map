@@ -61,12 +61,13 @@ final class ItemNames implements IntFunction<String>, SearchResults.Prices {
         return at == null || now - at >= (names.containsKey(id) ? 10 * 60_000 : RETRY_MS);
     }
 
-    /** Client thread. */
+    /** Client thread. -1 where the Grand Exchange gives no price (an item not traded there), as for one not known. */
     int lookUpPrice(int id) {
         try {
-            return (int) Math.min(Integer.MAX_VALUE, Math.max(0, itemManager.getItemPrice(id)));
+            long price = itemManager.getItemPrice(id);
+            return price <= 0 ? -1 : (int) Math.min(Integer.MAX_VALUE, price);
         } catch (RuntimeException e) {
-            return 0;
+            return -1;
         }
     }
 

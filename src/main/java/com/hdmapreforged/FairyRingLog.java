@@ -1,7 +1,6 @@
 package com.hdmapreforged;
 
 import java.util.*;
-import java.util.regex.*;
 import lombok.*;
 import net.runelite.api.*;
 import net.runelite.api.events.*;
@@ -16,10 +15,6 @@ import net.runelite.client.eventbus.*;
 @RequiredArgsConstructor
 final class FairyRingLog {
     static final int GREEN = 0x00FF00;
-    /** "Fairy ring: CKS", "House fairy ring: BKS", "Fairy ring: AIR, DLR, DJQ, then AJS". */
-    static final Pattern RING = Pattern.compile("airy ring: ((?:[A-Z]{3}(?:, then |, )?)+)");
-    static final Pattern CODE = Pattern.compile("[A-Z]{3}");
-
     final RouteFeature routes;
     boolean open;
     /** The code scrolled to since the log opened, the scroll set for it, and whether it is still held (not the user's). */
@@ -29,18 +24,8 @@ final class FairyRingLog {
 
     /** The codes of the route's first fairy ring step, in the order dialled; empty without one. */
     static List<String> codes(Route route) {
-        for (var step : route == null ? List.<Route.Step>of() : route.steps) {
-            Matcher ring = step.name == null ? null : RING.matcher(step.name);
-            if (ring != null && ring.find()) {
-                var codes = new ArrayList<String>();
-                Matcher code = CODE.matcher(ring.group(1));
-                while (code.find()) {
-                    codes.add(code.group());
-                }
-                return codes;
-            }
-        }
-        return List.of();
+        return (route == null ? List.<Route.Step>of() : route.steps).stream().map(step -> step.said.codes)
+            .filter(Objects::nonNull).findFirst().orElse(List.of());
     }
 
     @Subscribe

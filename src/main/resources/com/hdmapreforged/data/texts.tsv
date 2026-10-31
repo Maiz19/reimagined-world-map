@@ -1,17 +1,13 @@
-# The plugin's longer texts by key (PoiType.t): kept out of the Java code, which the Plugin Hub's review bot counts.
+# The plugin's longer texts by key (PoiType.t), kept as data apart from the code.
 # key, text; %s marks what the code puts in.
 t1	Which icons the map shows, each kind on its own
-t2	. Click a place to see it; its card has the way there.
 t3	Skilling spots: RuneLite (BSD 2-Clause)
 t4	Add "the nearest of these" to your custom route
 t5	Show the place you get to soonest, with your teleports and transport
 t6	Searching places, teleports, maps and every place of a kind (herb patches, shark fishing spots, banks). Click to search monsters and NPCs only
 t7	Searching monsters and NPCs. Click to search items only
 t8	Type and press Enter. The button next to it switches between places, monsters and items
-t9	Map: the surface, a dungeon or another area
-t10	Close this window; the sidebar's button opens it again
 t11	O -0.4 -0.4 0.8 0.8
-t12	Click an icon for details. Scroll to zoom, drag to move, double-click to zoom in. Right-click for the nearest teleports to a spot.
 t13	As the crow flies, from where each one lands. Walking routes may differ.
 t14	Add to your custom route (right-click the map, Custom routes...)
 t15	How many the shop keeps when no one has bought any, and the Grand Exchange price
@@ -103,3 +99,54 @@ dFilterTip	Only the monsters whose names hold the words typed
 dNothingKnown	Nothing known about "%s": no shop, ground spawn or drop.
 dSearchAll	Searching everything. Click to search places only
 dSearchItems	Searching items in shops. Click to search everything
+icUnmet	You do not meet a requirement for this trip
+icRoute	A route from where you are to here
+icNearest	Nearest teleports to this spot
+icLand	Teleports that land here
+icNone	None on this map.
+icWays	Ways to get here (%s)
+icSends	Can send you to (%s)
+icTravel	Travel to (%s)
+icLines	Draw lines from this %s to where it leads; remembered for every %s
+icWiki	Open %s on the wiki
+icElse	Where else to get %s
+icOther	Other %s (%s)
+icSells	Sells (%s)
+srNoPlaces	No places of "%s" are known.
+srIn	In %s, marked with green arrows%s. Click a place to see it; its card has the way there.
+srKind	%s, marked with green arrows%s. Click one to go there.
+srMarked	: marked on the map%s. Click a place to see it.
+srNoDrops	No monster of that name drops it.
+srClosest	Go to the place nearest to you
+mpWindow	The map in a window of its own
+rejoinTip	Join your last party again
+mpAlone	No one else in your party yet.
+mpNoShare	Not sharing where they are
+mpWhat	What %s carries, wears and can do
+mpOpen	Open the map where they are
+fwFold	Fold up: the name and the orbs only
+fwLook	Look at %s and what they carry
+rpBring	Quicker if you bring
+rpLeave	Leave this out of the route
+rpDest	Show the destination on the map
+rpClear	Remove the route from the map
+rpNever	Never use any %s
+rpEnds	 to where the route ends
+mvCheck	Check for a new map
+mvWorld	Open the world map
+mvFill	Fill the game view
+mvAbove	: no teleports above %s
+tpOrder	Order with current items
+tpBack	Back to the list
+rfIgnoring	Planned ignoring levels
+rfSpot	A spot on the map
+rsLeave	Leave the house by its portal
+msAll	Search places, monsters, items…
+msPlaces	Search places, patches, spots…
+msMonsters	Find a monster or NPC…
+msItems	Find an item…
+pmTitle	Reimagined World Map
+rsSummon	Summon your boat and board it at %s
+rsBoard	Board your boat at %s
+mpAll	‹ All routes
+msRanges	A–C D–F G–K L–O P–S T–Z

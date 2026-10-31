@@ -16,7 +16,7 @@ import net.runelite.client.ui.*;
 import net.runelite.client.util.*;
 
 /** Details of the selected icon (requirements, destinations, links), or the teleports nearest a chosen point. */
-final class InfoCard extends Fitted {
+class InfoCard extends Fitted {
     static final int MAX_LINKS = 60;
     static final Color MET = new Color(110, 200, 110), MISSING = new Color(230, 110, 100);
 
@@ -48,7 +48,7 @@ final class InfoCard extends Fitted {
         addHierarchyListener(e -> {
             if (routeStale && route != null && isShowing()) {
                 routeStale = false;
-                refill(routeHolder, route);
+                refill(route);
             }
         });
         refresh();
@@ -105,7 +105,7 @@ final class InfoCard extends Fitted {
         refresh();
     }
 
-    /** A route step passed rebuilds only the route: not the search list beside it, nor details that hide it. */
+    /** A route step passed rebuilds only the route, not details that hide it. */
     void setRoute(IntFunction<JComponent> route, boolean show) {
         boolean had = this.route != null;
         this.route = route;
@@ -118,60 +118,35 @@ final class InfoCard extends Fitted {
             // Built once the card shows.
             routeStale = true;
             return;
-        } else if (had && route != null && refill(routeHolder, route)) {
+        } else if (had && route != null && refill(route)) {
             return;
         }
         refresh();
     }
 
-    /** The route again in place of a place or extra shown since (the map opened while one is walked). */
+    /** The route again in place of a place shown since (the map opened while one is walked). */
     void showRoute() {
         if (route != null) {
             setRoute(route, true);
         }
     }
 
-    void setExtra(IntFunction<JComponent> extra) {
-        this.extra = extra;
-        if (extra != null) {
-            poi = null;
-            nearestTo = null;
-        }
-        refresh();
+    /** The route shown in a holder of its own, so it can change alone. */
+    final JPanel routeHolder = column();
+
+    /** The route's holder holding {@code section} alone, at the card's text width. */
+    JPanel fill(IntFunction<JComponent> section) {
+        routeHolder.removeAll();
+        routeHolder.add(section.apply(textWidth));
+        return routeHolder;
     }
 
-    /**
-     * A background update of {@code old}: taken only while it is still the card's extra, re-rendered only while shown
-     * (no place's details open over it), never closing anything.
-     */
-    boolean updateExtra(IntFunction<JComponent> old, IntFunction<JComponent> now) {
-        if (extra == null || extra != old) {
+    /** Only the route built again, while the card shows it; false when the card must be built whole. */
+    boolean refill(IntFunction<JComponent> section) {
+        if (routeHolder.getParent() != this || waiting != null) {
             return false;
         }
-        extra = now;
-        if (poi == null && nearestTo == null && !refill(extraHolder, now)) {
-            refresh();
-        }
-        return true;
-    }
-
-    IntFunction<JComponent> extra;
-    /** The extra and the route shown each in a holder of its own, so one can change without the other. */
-    final JPanel extraHolder = column(), routeHolder = column();
-
-    /** {@code holder} holding {@code section} alone, at the card's text width. */
-    JPanel fill(JPanel holder, IntFunction<JComponent> section) {
-        holder.removeAll();
-        holder.add(section.apply(textWidth));
-        return holder;
-    }
-
-    /** Only {@code holder} built again, while the card shows it; false when the card must be built whole. */
-    boolean refill(JPanel holder, IntFunction<JComponent> section) {
-        if (holder.getParent() != this || waiting != null) {
-            return false;
-        }
-        fill(holder, section);
+        fill(section);
         revalidate();
         repaint();
         onRebuilt.run();
@@ -216,28 +191,22 @@ final class InfoCard extends Fitted {
 
     Timer waiting;
 
+    /** The plugin stopping: no rebuild waits for the map's flight any more. */
+    void stop() {
+        if (waiting != null) {
+            waiting.stop();
+            waiting = null;
+        }
+    }
+
     void rebuildNow() {
         removeAll();
         if (nearestTo != null) {
             buildNearest();
-        } else if (poi == null && (extra != null || route != null)) {
-            if (extra != null) {
-                add(fill(extraHolder, extra));
-            }
-            if (extra != null && route != null) {
-                add(createVerticalStrut(8));
-                var line = new JSeparator();
-                line.setAlignmentX(Component.LEFT_ALIGNMENT);
-                add(line);
-                add(createVerticalStrut(4));
-            }
-            if (route != null) {
-                routeStale = !isShowing();
-                add(routeStale ? routeHolder : fill(routeHolder, route));
-            }
-        } else if (poi == null) {
-            add(grey(PoiType.t("t12")));
-        } else {
+        } else if (poi == null && route != null) {
+            routeStale = !isShowing();
+            add(routeStale ? routeHolder : fill(route));
+        } else if (poi != null) {
             buildDetails();
         }
         revalidate();
@@ -246,10 +215,10 @@ final class InfoCard extends Fitted {
     }
 
     void buildNearest() {
-        add(text("Nearest teleports to this spot", Color.WHITE, true));
-        add(grey(PoiType.t("t13")));
+        add(text(t("icNearest"), Color.WHITE, true));
+        add(grey(t("t13")));
         if (nearest.isEmpty()) {
-            add(grey("None on this map."));
+            add(grey(t("icNone")));
         }
         for (var found : nearest) {
             JLabel entry = link(found.name + "  (" + found.location.distanceTo2D(nearestTo) + " tiles)", () -> map.focus(found));
@@ -266,8 +235,7 @@ final class InfoCard extends Fitted {
         String where = poi.type.displayName + (poi.map != null ? " · " + poi.map.name : "")
             + (poi.location.getPlane() > 0 ? " · floor " + poi.location.getPlane() : "");
         var dot = poi.type == QUEST_START && map.unlocks != null ? map.unlocks.questColor(poi.name) : null;
-        where += dot == null ? "" : dot == Color.GREEN ? " · Finished" : dot == Color.YELLOW ? " · Started"
-            : " · Not started";
+        where += dot == null ? "" : dot == Color.GREEN ? " · Finished" : dot == Color.YELLOW ? " · Started" : " · Not started";
         add(grey(where));
 
         var buttons = new ArrayList<JButton>();
@@ -277,23 +245,16 @@ final class InfoCard extends Fitted {
         }
         var target = poi;
         if (router != null) {
-            buttons.add(tip(button("Route", () -> router.accept(target.location)),
-                "A route from where you are to here"));
+            buttons.add(tip(button("Route", () -> router.accept(target.location)), t("icRoute")));
         }
         if (stopAdder != null) {
-            buttons.add(tip(button("+ Stop", () -> stopAdder.accept(Tour.Stop.place(
-                target.name, target.location))), PoiType.t("t14")));
+            buttons.add(tip(button("+ Stop", () -> stopAdder.accept(Tour.Stop.place(target.name, target.location))), t("t14")));
         }
-        buttons.add(button("Wiki", () -> LinkBrowser.browse(
-            Wiki.searchUrl(poi.wikiQuery != null ? poi.wikiQuery : poi.name))));
+        buttons.add(button("Wiki", () -> LinkBrowser.browse(Wiki.searchUrl(poi.wikiQuery != null ? poi.wikiQuery : poi.name))));
         // Slimmer than usual, so more share a row.
         buttons.forEach(button -> button.setMargin(new Insets(2, 6, 2, 6)));
         add(createVerticalStrut(6));
         add(wrapLabels(buttons, 4, textWidth + 70));
-        if (extra != null) {
-            add(createVerticalStrut(4));
-            add(link("← Back to the search results", () -> map.select(null)));
-        }
 
         if (poi.note != null) {
             add(createVerticalStrut(6));
@@ -302,11 +263,10 @@ final class InfoCard extends Fitted {
 
         if (!poi.nearby().isEmpty()) {
             boolean teleports = poi.nearby().stream().allMatch(p -> p.type == TELEPORT);
-            heading(teleports ? "Teleports that land here" : "Also here");
+            heading(teleports ? t("icLand") : "Also here");
             for (var other : poi.nearby()) {
                 for (var member : other.members()) {
-                    addMember(member, member.type == TELEPORT || teleports ? ""
-                        : "  (" + member.type.displayName + ")");
+                    addMember(member, member.type == TELEPORT || teleports ? "" : "  (" + member.type.displayName + ")");
                 }
             }
         }
@@ -317,7 +277,7 @@ final class InfoCard extends Fitted {
 
         var members = poi.members();
         if (members.size() > 1) {
-            heading("Ways to get here (" + members.size() + ")");
+            heading(t("icWays", members.size()));
             for (var member : members) {
                 addMember(member, "");
             }
@@ -332,12 +292,11 @@ final class InfoCard extends Fitted {
         var ownLines = new HashSet<String>();
         own.forEach(line -> ownLines.add(line.text));
         if (!links.isEmpty()) {
-            heading(poi.type.isRandomDestination() ? "Can send you to (" + links.size() + ")"
-                : PoiType.NETWORKS.contains(poi.type) ? "Travel to (" + links.size() + ")" : "Leads to");
+            heading(poi.type.isRandomDestination() ? t("icSends", links.size())
+                : PoiType.NETWORKS.contains(poi.type) ? t("icTravel", links.size()) : "Leads to");
             String type = poi.type.displayName.toLowerCase(Locale.ROOT);
             // A box as the Icons panel's, in the card's smaller grey text.
-            var lines = IconPanel.check("Show lines on the map", "Draw lines from this " + type
-                + " to where it leads; remembered for every " + type, map.linesShown(poi.type),
+            var lines = IconPanel.check("Show lines on the map", t("icLines", type, type), map.linesShown(poi.type),
                 on -> map.setLinesShown(target.type, on));
             lines.setFont(FontManager.getRunescapeSmallFont());
             lines.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
@@ -352,7 +311,7 @@ final class InfoCard extends Fitted {
                     ? "  (" + link.map.name + ")" : "");
                 JLabel entry = link((usable ? "" : "✗ ") + label, () -> goTo(link));
                 if (!usable) {
-                    entry.setToolTipText("You do not meet a requirement for this trip");
+                    entry.setToolTipText(t("icUnmet"));
                 }
                 add(entry);
                 // Only what this trip needs beyond the stop's own requirements, listed above.
@@ -365,7 +324,7 @@ final class InfoCard extends Fitted {
         var group = groupOf(poi);
         if (!group.isEmpty()) {
             String kind = poi.group.toLowerCase(Locale.ROOT).endsWith("teleports") ? poi.group : poi.group + " teleports";
-            heading("Other " + kind + " (" + group.size() + ")");
+            heading(t("icOther", kind, group.size()));
             for (int i = 0; i < group.size() && i < MAX_LINKS; i++) {
                 var other = group.get(i);
                 add(link(shortName(other), () -> map.focus(other)));
@@ -395,7 +354,7 @@ final class InfoCard extends Fitted {
             npcPictures.show(shop.npc, keeper);
             add(pictureRow(keeper, grey(shop.name)));
         }
-        heading("Sells (" + wares.size() + ")");
+        heading(t("icSells", wares.size()));
         add(choice(new String[][]{{"shop", "Shop order"}, {"stock", "Stock"}, {"name", "Name"},
             {"price", "Price"}}, wareSort, sort -> {
                 wareSort = sort;
@@ -409,14 +368,12 @@ final class InfoCard extends Fitted {
             // The name, like a drop's in the search panel, looks the item up in the plugin: where else it comes from.
             Runnable wiki = () -> LinkBrowser.browse(Wiki.pageUrl(ware.item));
             Runnable open = itemSearch != null ? () -> itemSearch.accept(ware.item) : wiki;
-            String onWiki = "Open " + ware.item + " on the wiki";
-            JComponent name = tip(bold(link(ware.item, open)),
-                itemSearch != null ? "Where else to get " + ware.item : onWiki);
+            String onWiki = t("icWiki", ware.item);
+            JComponent name = tip(bold(link(ware.item, open)), itemSearch != null ? t("icElse", ware.item) : onWiki);
             int price = itemNames.price(ware.itemId);
             JPanel line = panel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-            line.add(tip(grey(dotted(ItemSources.stockText(ware.stock),
-                price >= 0 ? "GE " + gp(price) : null) + " · "),
-                PoiType.t("t15")));
+            line.add(tip(grey(dotted(ItemSources.stockText(ware.stock), price >= 0 ? "GE " + gp(price) : null) + " · "),
+                t("t15")));
             line.add(tip(link("Wiki", wiki), onWiki));
             add(createVerticalStrut(3));
             add(clickableRow(pictureRow(icon, name, line), open));

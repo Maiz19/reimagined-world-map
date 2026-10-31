@@ -35,8 +35,9 @@ final class RouteController {
     final Consumer<RouteController> changed;
     final LongSupplier clock;
 
+    /** The tile or sea block asked for, or -1; the game's menu (client thread) reads it too. */
     @Getter
-    int target = -1;
+    volatile int target = -1;
     @Getter
     Route route;
     /** Where the route starts, or -1: before a first teleport the player stands there, on none of its steps. */
@@ -214,11 +215,16 @@ final class RouteController {
 
     /** Within {@link #ARRIVED} tiles of the route's end (or the tile asked for), on the same floor. */
     boolean arrived(int player) {
-        if (player < 0 || route == null || isSea(player)) {
+        if (player < 0 || route == null) {
             return false;
         }
         // A route that cannot get there ends where it gets stuck: no arrival.
         int end = route.outcome != FOUND ? -1 : route.end >= 0 ? route.end : target;
+        // At sea only where the route sails to (a spot on the water is a tile, its route's end a sea block): a way ashore
+        // ends once off the boat.
+        if (isSea(player) && !isSea(end)) {
+            return false;
+        }
         return end >= 0 && Tiles.near(player, end, ARRIVED) || target >= 0 && Tiles.near(player, target, ARRIVED);
     }
 
@@ -278,8 +284,7 @@ final class RouteController {
                 } catch (Throwable e) {
                     log.warn("Route search to {} failed", format(searched), e);
                 } finally {
-                    Route done = result != null ? result : new Route(NONE, List.of(), 0, searched, -1,
-                        false, false, 0);
+                    Route done = result != null ? result : new Route(NONE, List.of(), 0, searched, -1, false, false, 0);
                     callbacks.execute(() -> finished(cancel, searched, request, user, done));
                 }
             });

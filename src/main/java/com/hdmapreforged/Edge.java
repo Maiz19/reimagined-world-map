@@ -29,21 +29,25 @@ final class Edge {
     final int cost;
     final int time;
     final String category;
+    /** The parts of its texts ({@link Route.Said}): its step's. */
+    @With
+    final Route.Said said;
 
     Edge(int from, int to, Kind kind, String name, String detail, int cost) {
         this(from, to, kind, name, detail, cost, null);
     }
 
     Edge(int from, int to, Kind kind, String name, String detail, int cost, String category) {
-        this(from, to, kind, name, detail, Math.max(1, cost), Math.max(1, cost), category);
+        this(from, to, kind, name, detail, Math.max(1, cost), Math.max(1, cost), category, Route.Said.NONE);
+    }
+
+    /** With {@code said}, its detail what that says. */
+    Edge saying(Route.Said said) {
+        return new Edge(from, to, kind, name, said.text(), cost, time, category, said);
     }
 
     /** Heavier in the search only ("only use a teleport when it saves at least 10 tiles"). */
     Edge weighed(int extra) {
         return extra <= 0 ? this : withCost(cost + extra);
-    }
-
-    public String toString() {
-        return kind + " " + name + " " + (from == ANYWHERE ? "anywhere" : Tiles.format(from)) + " -> " + Tiles.format(to);
     }
 }

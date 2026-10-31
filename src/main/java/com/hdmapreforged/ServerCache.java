@@ -15,7 +15,7 @@ import net.runelite.client.util.*;
  * once; once another version of a kind is in use ({@link #prune}), the old version's folder goes.
  */
 @RequiredArgsConstructor
-final class ServerCache {
+class ServerCache {
     static final Pattern NAME = Pattern.compile("[A-Za-z0-9_.-]{1,64}");
     static final Pattern KIND = Pattern.compile("[a-z]{1,16}");
     static final int MAX_BYTES = 16 * 1024 * 1024;
@@ -32,11 +32,13 @@ final class ServerCache {
     /**
      * A file's bytes: from disk when seen before, else from {@code fetch}, which asks the server and hands the bytes
      * (null when there are none) to the consumer it is given; they are kept for next time. Any thread; {@code done}
-     * is called once, on any thread, with null when there are no bytes.
+     * is called once, on any thread, with null when there are no bytes or the plugin stopped.
      */
     void bytes(String kind, String version, String name, Consumer<Consumer<byte[]>> fetch, Consumer<byte[]> done) {
         var file = file(kind, version, name);
-        if (file == null || !TileCache.execute(io, () -> {
+        if (file == null) {
+            fetch.accept(done);
+        } else if (!TileCache.execute(io, () -> {
             String key = kind + "/" + version + "/" + name;
             var kept = stale.contains(key) ? null : read(file);
             if (kept != null) {
@@ -47,12 +49,31 @@ final class ServerCache {
                 if (bytes != null) {
                     // Passed over until the server's copy comes, so a version is never half old copies, half new.
                     stale.remove(key);
-                    TileCache.execute(io, () -> keep(file, bytes));
+                    TileCache.execute(io, () -> {
+                        keep(file, bytes);
+                        // Found unusable meanwhile ({@link #forget}): its delete may have run before this write ended.
+                        if (stale.contains(key)) {
+                            TileCache.delete(file);
+                        }
+                    });
                 }
                 done.accept(bytes);
             });
         })) {
-            fetch.accept(done);
+            // The plugin stopped: nothing is fetched for it.
+            done.accept(null);
+        }
+    }
+
+    /**
+     * A kept copy that turned out unusable: passed over and removed, so the next ask, also after a restart, is the
+     * server's. Any thread.
+     */
+    void forget(String kind, String version, String name) {
+        var file = file(kind, version, name);
+        if (file != null) {
+            stale.add(kind + "/" + version + "/" + name);
+            TileCache.execute(io, () -> TileCache.delete(file));
         }
     }
 
@@ -103,8 +124,7 @@ final class ServerCache {
             return;
         }
         try (var others = folder.walk(1)) {
-            others.filter(other -> !other.equals(folder) && !other.getFileName().equals(version))
-                .forEach(TileCache::deleteTree);
+            others.filter(other -> !other.equals(folder) && !other.getFileName().equals(version)).forEach(TileCache::deleteTree);
         } catch (IOException | UncheckedIOException e) {
             // A folder another prune removed meanwhile: what is left goes next time.
         }

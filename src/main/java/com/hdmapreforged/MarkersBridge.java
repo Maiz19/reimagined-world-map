@@ -13,7 +13,7 @@ import net.runelite.client.events.*;
  * {@code texts} and {@code clear}; its guide's "For plugin developers"). It clears them on logout, world hop, connection
  * loss and a profile change: they are sent again after.
  */
-final class MarkersBridge {
+class MarkersBridge {
     static final String NAMESPACE = "hd-world-markers";
     static final String OWNER = "hd-map-reforged-route";
     static final String PLUGIN_NAME = "HD World Markers";
@@ -22,7 +22,7 @@ final class MarkersBridge {
 
     /** A tile to mark, optionally labelled. */
     @AllArgsConstructor
-    static final class Tile {
+    static class Tile {
         final WorldPoint point;
         final Color color;
         /** Null: a faint fill after the colour's transparency. */

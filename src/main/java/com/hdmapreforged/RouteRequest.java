@@ -58,8 +58,8 @@ final class RouteRequest {
     /** Whether a search may use the same ways as with {@code other} (jumps and sea): what it reaches differs by start only. */
     boolean sameWays(RouteRequest other) {
         return sailingLevel == other.sailingLevel && noWild == other.noWild
-            && (boat == null) == (other.boat == null) && same(edges, other.edges)
-            && same(startEdges, other.startEdges);
+            && (boat == null ? other.boat == null : other.boat != null && boat.sameWays(other.boat))
+            && same(edges, other.edges) && same(startEdges, other.startEdges);
     }
 
     static boolean same(List<Edge> a, List<Edge> b) {

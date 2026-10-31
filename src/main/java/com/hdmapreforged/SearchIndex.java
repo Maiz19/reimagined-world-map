@@ -11,7 +11,7 @@ import net.runelite.api.coords.*;
  * in a map version's places.json (made by the test sources' SearchIndexBuilder).
  */
 @RequiredArgsConstructor
-final class SearchIndex {
+class SearchIndex {
     @RequiredArgsConstructor
     enum Type {
         PLACE(0),
@@ -26,7 +26,7 @@ final class SearchIndex {
         final int rank;
     }
 
-    static final class Hit {
+    static class Hit {
         final Type type;
         final String label;
         final String[] words;
@@ -136,8 +136,7 @@ final class SearchIndex {
     static int best(String typed, String[] words) {
         int best = -1;
         for (String word : words) {
-            int fit = word.equals(typed) ? 0 : word.startsWith(typed) ? 1
-                : typed.length() >= 3 && word.contains(typed) ? 2
+            int fit = word.equals(typed) ? 0 : word.startsWith(typed) ? 1 : typed.length() >= 3 && word.contains(typed) ? 2
                 : typed.length() >= 5 && nearlyStarts(word, typed) ? 3 : -1;
             if (fit >= 0 && (best < 0 || fit < best)) {
                 best = fit;

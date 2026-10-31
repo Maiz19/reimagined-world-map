@@ -9,23 +9,22 @@ import lombok.*;
 /**
  * Where a boat can sail: ground floor water in CELL×CELL blocks, open sea when mostly water (boats keep off rivers
  * and shores). Each block takes the hazard level of the nearest named sea (approximate near borders). Made once per
- * map version by the map server (the version's sea.bin), with its seas (sea_areas.tsv). Immutable.
+ * map version by the map server (the version's sea.bin), with its seas (its tables' seas). Immutable.
  */
 @RequiredArgsConstructor(access = AccessLevel.PACKAGE)
 final class SeaMap {
-    static final String AREAS = RouteFiles.DIR + "sea_areas.tsv";
     /** No sea here. */
     static final byte NONE = -2;
     /** Sea no boat can cross yet. */
     static final byte CLOSED = -1;
 
-    @RequiredArgsConstructor(access = AccessLevel.PACKAGE)
+    /** A sea the map version names (from the wiki's list). */
     static final class Area {
-        final String name;
-        final int x, y;
-        final String hazard;
+        String name;
+        int x, y;
+        String hazard;
         /** 0 for none, -1 when it cannot be crossed. */
-        final int level;
+        int level;
     }
 
     /** Per region, per 16×16 block: the level needed, NONE or CLOSED; null when no sea. */
@@ -37,7 +36,7 @@ final class SeaMap {
      * cache-2727.40) or without its seas has no sea: no sailing, but the planner still loads.
      */
     static SeaMap load() {
-        var sea = new SeaMap(readAreas());
+        var sea = new SeaMap(RouteFiles.tables().seas);
         try (var in = new DataInputStream(RouteFiles.require(RouteFiles.DIR + "sea.bin"))) {
             for (int high; (high = in.read()) >= 0; ) {
                 byte[] cells = new byte[256];
@@ -51,23 +50,9 @@ final class SeaMap {
         return sea;
     }
 
-    /** The seas sea_areas.tsv lists (name, ocean (not used), x, y, hazard, level); blank lines are short rows too. */
-    static List<Area> readAreas() {
-        return Pathfinder.table(AREAS, c -> c.length < 6 ? null : new Area(c[0], Integer.parseInt(c[2].trim()),
-            Integer.parseInt(c[3].trim()), c[4], Integer.parseInt(c[5].trim())));
-    }
-
     Area nearest(int x, int y) {
-        Area best = null;
-        long bestDistance = Long.MAX_VALUE;
-        for (Area area : areas) {
-            long dx = area.x - x, dy = area.y - y, d = dx * dx + dy * dy;
-            if (d < bestDistance) {
-                bestDistance = d;
-                best = area;
-            }
-        }
-        return best;
+        return areas.stream().min(Comparator.comparingLong(a -> (long) (a.x - x) * (a.x - x) + (long) (a.y - y) * (a.y - y)))
+            .orElse(null);
     }
 
     /** The level a block needs, NONE or CLOSED. */

@@ -5,7 +5,7 @@ import lombok.*;
 
 /** What a route may use, taken on the client thread and read elsewhere. Immutable. */
 @AllArgsConstructor(access = AccessLevel.PRIVATE)
-final class PlayerState {
+class PlayerState {
     static final PlayerState UNKNOWN = new PlayerState(ItemSnapshot.NONE, 1, false, new int[0], true, false, -1,
         false, Set.of(), true);
 

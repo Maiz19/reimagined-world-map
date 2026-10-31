@@ -116,12 +116,11 @@ public final class RouteHouse {
         var local = me();
         var view = routes.client.getTopLevelWorldView();
         var seen = plan;
-        int at = seen == null || !house.own() || local == null || view == null ? -1
-            : planNode(local, view.getPlane());
+        int at = seen == null || !house.own() || local == null || view == null ? -1 : planNode(local, view.getPlane());
         // Just in, one stands where the portal put one (its arrival), but the tile read from the scene on the first
         // ticks is off (the scene still loading): the arrival is the tile until the reading changes (it settles, or
         // one walks).
-        if (seen == null || enteredAt < 0 || routes.ticks - enteredAt >= SETTLE_TICKS) {
+        if (seen == null || !house.own() || enteredAt < 0 || routes.ticks - enteredAt >= SETTLE_TICKS) {
             return at;
         }
         if (firstReading == NONE) {
@@ -301,17 +300,19 @@ public final class RouteHouse {
         }
     }
 
-    /** The varbits of the nexus' 45 slots: runs one after another, each its first and length (list "nexus slots"). */
-    static final RouteFiles.Table<int[]> NEXUS_SLOTS = new RouteFiles.Table<>(() -> Pathfinder.list("nexus slots",
-        item -> Arrays.copyOf(Pathfinder.ints(item), 2)).stream().flatMapToInt(run -> IntStream.range(run[0],
-        run[0] + run[1])).filter(varbit -> varbit >= 0).limit(45).toArray());
-
     /** "Portal Nexus: Varrock, Falador": its places from the game's varbits (slot, teleport, its name). */
     String nexus() {
         var places = new ArrayList<String>();
         var teleports = routes.client.getEnum(NEXUS_TELEPORTS);
-        for (int varbit : teleports == null ? new int[0] : NEXUS_SLOTS.get()) {
-            int id = routes.client.getVarbitValue(varbit), struct = id <= 0 ? -1 : teleports.getIntValue(id);
+        for (int varbit : teleports == null ? new int[0] : RouteFiles.tables().nexusSlots) {
+            int id;
+            try {
+                id = routes.client.getVarbitValue(varbit);
+            } catch (RuntimeException e) {
+                // Not a varbit the game has (gone after a game update): no place in that slot.
+                continue;
+            }
+            int struct = id <= 0 ? -1 : teleports.getIntValue(id);
             var teleport = struct < 0 ? null : routes.client.getStructComposition(struct);
             String name = teleport == null ? null : teleport.getStringValue(NEXUS_NAME);
             String place = name == null ? null : Text.removeTags(name);
@@ -330,11 +331,8 @@ public final class RouteHouse {
         String what = (event.getMenuOption() + " " + Text.removeTags(event.getMenuTarget()) + " " + (widget == null
             || widget.getText() == null ? "" : Text.removeTags(widget.getText()))).toLowerCase(Locale.ROOT);
         // Also a tablet, the spell or a cape into it (not their Outside): at a portal that would look like a friend's.
-        if (what.startsWith("home ") || what.startsWith("build mode ") || what.contains("your house")
-            || what.startsWith("tele to poh") || what.matches("(break|inside|cast) teleport to house.*")) {
-            house.chose(true);
-        } else if (what.contains("friend's house")) {
-            house.chose(false);
+        for (String chose : RouteFiles.tables().rules("house menu rules", what, false)) {
+            house.chose(chose.equals("own"));
         }
     }
 
@@ -495,8 +493,7 @@ public final class RouteHouse {
         }
         houseOf = routes.client.getAccountHash();
         routes.loadBank();
-        routes.planted.load(routes.configManager.getRSProfileConfiguration(GROUP,
-            Planted.KEY));
+        routes.planted.load(routes.configManager.getRSProfileConfiguration(GROUP, Planted.KEY));
         String saved = routes.configManager.getRSProfileConfiguration(GROUP, HOUSE_KEY);
         var features = new LinkedHashSet<String>(Arrays.asList(saved == null ? new String[0] : saved.split(",")));
         features.remove("");
@@ -524,7 +521,7 @@ public final class RouteHouse {
     }
 
     /** One's house at the surface map's edge: its picture per floor, and what stands where. */
-    void paintHouse(Graphics2D g, Projection p) {
+    void paintHouse(Graphics2D g, MapView p) {
         var seen = plan;
         g.setFont(FontManager.getRunescapeSmallFont());
         if (seen == null) {
@@ -534,15 +531,20 @@ public final class RouteHouse {
         BufferedImage look = houseLook.get()[max(0, min(3, p.plane()))];
         // At the surface map's edge, where the map draws the house.
         int left = (int) round(p.screenX(DRAWN_X)), top = (int) round(p.screenY(DRAWN_Y + SIZE));
+        int width = (int) round(p.screenX(DRAWN_X + SIZE)) - left, height = (int) round(p.screenY(DRAWN_Y)) - top;
+        // Mostly out of view: its labels were still drawn each frame, on a turned map each turn's glyphs anew, which
+        // overflowed Java's glyph cache and made turning stutter.
+        if (!g.hitClip(left, top, width, height)) {
+            return;
+        }
         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
-        g.drawImage(look, left, top, (int) round(p.screenX(DRAWN_X
-            + SIZE)) - left, (int) round(p.screenY(DRAWN_Y)) - top, null);
+        g.drawImage(look, left, top, width, height, null);
         seen.things.forEach((node, name) -> {
             String label = name.split(":")[0];
-            float x = (float) RouteText.x(p, node) - g.getFontMetrics().stringWidth(label) / 2f;
-            float y = (float) RouteText.y(p, node);
+            float cx = (float) RouteText.x(p, node), y = (float) RouteText.y(p, node);
             if (Tiles.z(node) == p.plane()) {
-                TextSprites.shadowed(g, label, x, y, Color.WHITE);
+                MapView.upright(g, cx, y, () -> TextSprites.shadowed(g, label,
+                    cx - g.getFontMetrics().stringWidth(label) / 2f, y, Color.WHITE));
             }
         });
     }
@@ -638,6 +640,8 @@ public final class RouteHouse {
         collision = map;
         if (map != null) {
             map.setHouse(plan);
+            // An open house panel that waited for the route data.
+            houseChanged();
         }
     }
 

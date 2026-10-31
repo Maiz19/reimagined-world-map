@@ -27,14 +27,15 @@ final class RoutePanels {
         int inner = Math.max(80, width - 47);
         box.add(text("Now", LIGHT_GRAY_COLOR, PLAIN, 0, inner));
         Step now = left.steps.get(0);
-        JLabel doing = text(saying(left, now, false), color(now, walk, jump), BOLD, 3, inner);
+        JLabel doing = text(saying(left, now, false, false), color(now, walk, jump), BOLD, 3, inner);
         box.add(doing);
-        if (now.detail != null && !unsure(now.detail)) {
-            box.add(text(now.detail, LIGHT_GRAY_COLOR, PLAIN, 0, inner));
-        }
+        // Hidden while the step has none: a walk's obstacles drop out as they are passed (updateNow).
+        JLabel detail = text(nowDetail(now), LIGHT_GRAY_COLOR, PLAIN, 0, inner);
+        detail.setVisible(!nowDetail(now).isEmpty());
+        box.add(detail);
         for (int i = 1; i < Math.min(3, left.steps.size()); i++) {
             Step then = left.steps.get(i);
-            add(box, 4, text((i == 1 ? "Then: " : "After that: ") + saying(left, then, false), color(then, walk, jump),
+            add(box, 4, text((i == 1 ? "Then: " : "After that: ") + saying(left, then, false, false), color(then, walk, jump),
                 PLAIN, 0, inner));
         }
         JLabel remaining = text(duration(left) + " left", LIGHT_GRAY_COLOR, PLAIN, 0, inner);
@@ -42,6 +43,7 @@ final class RoutePanels {
         var wrapped = wrapped(box, 8);
         // What changes as the player walks (updateNow).
         wrapped.putClientProperty("doing", doing);
+        wrapped.putClientProperty("detail", detail);
         wrapped.putClientProperty("left", remaining);
         wrapped.putClientProperty("width", inner);
         return wrapped;
@@ -54,7 +56,7 @@ final class RoutePanels {
     static JComponent tipBox(List<String[]> bring, String sooner, int width) {
         JPanel box = edgeBox(NOTE);
         int inner = Math.max(80, width - 47);
-        box.add(text("Quicker if you bring", NOTE, PLAIN, 0, inner));
+        box.add(text(t("rpBring"), NOTE, PLAIN, 0, inner));
         for (var thing : bring) {
             add(box, 4, text(thing[0], Color.WHITE, BOLD, 0, inner));
             box.add(text("for " + thing[1], LIGHT_GRAY_COLOR, PLAIN, 0, inner));
@@ -68,8 +70,7 @@ final class RoutePanels {
         JPanel box = column();
         box.setOpaque(true);
         box.setBackground(DARK_GRAY_COLOR);
-        box.setBorder(createCompoundBorder(createMatteBorder(0, 3, 0, 0, edge),
-            createEmptyBorder(6, 8, 6, 6)));
+        box.setBorder(createCompoundBorder(createMatteBorder(0, 3, 0, 0, edge), createEmptyBorder(6, 8, 6, 6)));
         return box;
     }
 
@@ -81,10 +82,19 @@ final class RoutePanels {
         return spaced;
     }
 
-    /** A tick of walking: only the two texts of {@link #nowBox} that change are set again. */
+    /** The "Now" step's detail as shown under it, or "": none when it only cautions that it may need something. */
+    static String nowDetail(Step now) {
+        return now.detail != null && !unsure(now.detail) ? now.detail : "";
+    }
+
+    /** A tick of walking: only the texts of {@link #nowBox} that change are set again. */
     static void updateNow(JComponent box, Route left) {
         int inner = (Integer) box.getClientProperty("width");
-        setText((JLabel) box.getClientProperty("doing"), saying(left, left.steps.get(0), false), inner);
+        Step now = left.steps.get(0);
+        setText((JLabel) box.getClientProperty("doing"), saying(left, now, false, false), inner);
+        var detail = (JLabel) box.getClientProperty("detail");
+        setText(detail, nowDetail(now), inner);
+        detail.setVisible(!nowDetail(now).isEmpty());
         setText((JLabel) box.getClientProperty("left"), duration(left) + " left", inner);
     }
 
@@ -103,15 +113,14 @@ final class RoutePanels {
             if (unreachable) {
                 panel.add(label(cannotYet(route), width, BOLD, CANNOT));
             }
-            var blockers = actions == null || route.outcome != Outcome.NEAREST ? null
-                : blockers(actions.why);
+            var blockers = actions == null || route.outcome != Outcome.NEAREST ? null : blockers(actions.why);
             if (blockers != null) {
                 panel.add(label(blockers.isEmpty() ? t("needsUnknown")
                     : blockers.contains(NO_WAY) ? NO_WAY : "Needs: " + String.join(", ", blockers), width, NOTE));
             }
             if (!route.steps.isEmpty()) {
                 panel.add(label(duration(route) + (route.outcome == Outcome.NEAREST
-                    ? " to where the route ends" : ""), width, LIGHT_GRAY_COLOR));
+                    ? t("rpEnds") : ""), width, LIGHT_GRAY_COLOR));
             }
             String bring = RouteText.bring(route);
             if (bring != null) {
@@ -122,7 +131,7 @@ final class RoutePanels {
             boolean unsure = false;
             for (Step step : route.steps) {
                 boolean lacking = unreachable && lacks(step), cannot = blocked >= 0 && number - 1 >= blocked;
-                String detail = lacking ? "Needs " + lack(step) : step.detail;
+                String detail = lacking ? "Needs " + step.said.lack : step.detail;
                 if (!lacking && unsure(detail)) {
                     unsure = true; // said once under the steps
                     detail = null;
@@ -130,14 +139,15 @@ final class RoutePanels {
                 // A passage, stairs or transport shows where it leads (the other map).
                 boolean leads = step.isJump() && !Tiles.isSea(step.last()) && step.first() != step.last();
                 int point = leads ? step.last() : step.first();
-                JButton row = flat("<html><body style='width:" + Math.max(80, width - 40) + "px'>" + number++ + ". "
-                    + escape(saying(route, step, false))
+                // The colour before the text: set after it, an HTML button parses its text again.
+                JButton row = flat("", leads ? t("showLeads") : "Show on the map",
+                    () -> focus.accept(worldPoint(point)));
+                row.setForeground(number - 1 < done ? MEDIUM_GRAY_COLOR : cannot ? CANNOT : color(step, walk, jump));
+                row.setText("<html><body style='width:" + Math.max(80, width - 40) + "px'>" + number++ + ". "
+                    + escape(saying(route, step, false, false))
                     + (detail != null ? "<br><span style='color:" + (cannot ? "#ff7070" : "#a0a0a0") + "'>"
                         + escape(detail) + "</span>" : "")
-                    + "</body></html>", leads ? t("showLeads") : "Show on the map",
-                    () -> focus.accept(worldPoint(point)));
-                row.setForeground(number - 2 < done ? MEDIUM_GRAY_COLOR : cannot ? CANNOT
-                    : color(step, walk, jump));
+                    + "</body></html>");
                 row.setMargin(new Insets(1, 0, 1, 0));
                 boolean choice = step.name != null && (step.kind == Kind.TELEPORT
                     || step.kind == Kind.TRANSPORT || step.kind == Kind.SHIP
@@ -151,8 +161,8 @@ final class RoutePanels {
                 JButton more = new JButton("⋯");
                 more.setFocusable(false);
                 more.setMargin(new Insets(0, 4, 0, 4));
-                more.setToolTipText("Leave this out of the route");
-                String name = BankDetour.plain(step.name), category = step.category;
+                more.setToolTipText(t("rpLeave"));
+                String name = step.name, category = step.category;
                 more.addActionListener(a -> {
                     var menu = new JPopupMenu();
                     String running = actions.runningTour();
@@ -167,7 +177,7 @@ final class RoutePanels {
                     menu.addSeparator();
                     item(menu, "Never use \"" + name + "\"", () -> actions.never(name));
                     if (category != null) {
-                        item(menu, "Never use any " + category, () -> actions.never(RouteSource.TYPE + category));
+                        item(menu, t("rpNever", category), () -> actions.never(RouteSource.TYPE + category));
                     }
                     menu.show(more, 0, more.getHeight());
                 });
@@ -176,8 +186,7 @@ final class RoutePanels {
             }
             // After the last step: where it all goes, as the arrow on the map.
             int end = route.end >= 0 ? route.end : target;
-            JButton destination = flat("\u25BC Destination", "Show the destination on the map",
-                () -> focus.accept(worldPoint(end)));
+            JButton destination = flat("\u25BC Destination", t("rpDest"), () -> focus.accept(worldPoint(end)));
             destination.setForeground(END);
             destination.setMargin(new Insets(1, 0, 1, 0));
             panel.add(destination);
@@ -195,7 +204,7 @@ final class RoutePanels {
         }
         JButton clearButton = button("Clear path", clear);
         clearButton.setAlignmentX(0);
-        clearButton.setToolTipText("Remove the route from the map");
+        clearButton.setToolTipText(t("rpClear"));
         add(panel, 4, clearButton);
         return panel;
     }

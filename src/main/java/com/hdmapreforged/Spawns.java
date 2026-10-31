@@ -7,15 +7,15 @@ import net.runelite.api.coords.*;
 
 /** Where a monster or NPC is, as places of close spawns, and what it drops ({@link WorldData#spawns}); also a kind's places. */
 @RequiredArgsConstructor
-final class Spawns {
+class Spawns {
     @RequiredArgsConstructor
-    static final class Group {
+    static class Group {
         final String name, location;
         final List<WorldPoint> points;
         final String category;
         /** What the list says of it ("7 here", "4 spots"); empty or null for nothing. */
         final String note;
-        // Not in search2.json.
+        // Not in search3.json.
         final transient Color color;
         transient Poi poi;
         /** How many stand here (see {@link WorldData#spawns}); 0 when not counted. */

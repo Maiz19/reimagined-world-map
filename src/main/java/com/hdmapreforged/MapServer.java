@@ -5,6 +5,7 @@ import java.awt.image.*;
 import java.io.*;
 import java.nio.charset.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.function.*;
 import java.util.regex.*;
 import lombok.*;
@@ -13,11 +14,12 @@ import okhttp3.*;
 /**
  * Our own map server: the map's tiles, its list of maps, region table and places and its version, all drawn from the
  * game's own data, its NPC pictures, and its lists of where NPCs stand and what shops keep ({@link WorldData}). A
- * download sends only the address of what is wanted; nothing is ever sent about the player. The host is fixed; only in
- * RuneLite's developer mode does the system property {@code hdmap.server} point elsewhere.
+ * download sends only the address of what is wanted (a tile's is its place on the map); nothing is ever sent about the
+ * player's account. The host is fixed; only in RuneLite's developer mode does the system property {@code hdmap.server}
+ * point elsewhere.
  */
 @RequiredArgsConstructor
-final class MapServer {
+class MapServer {
     /** The live map server; its website shows the same map. */
     static final String HOST = "https://osrsmapreforged.online";
     static final int MAX_BODY_BYTES = 16 * 1024 * 1024;
@@ -26,6 +28,8 @@ final class MapServer {
 
     final OkHttpClient http;
     final Gson gson;
+    /** Downloads on the way, cancelled when the plugin stops. */
+    final Set<Call> calls = ConcurrentHashMap.newKeySet();
 
     /** In developer mode {@code -Dhdmap.server=<url>} when given, else the fixed host. */
     static void use(boolean developerMode) {
@@ -52,7 +56,7 @@ final class MapServer {
 
     /** The server's current versions; each null when it cannot be had. */
     @RequiredArgsConstructor
-    static final class Versions {
+    static class Versions {
         static final Versions NONE = new Versions(null, null);
         final String map;
         /** Of the lists: where NPCs stand, the shops. */
@@ -68,7 +72,7 @@ final class MapServer {
 
     /** What a map version's tiles changed since an earlier version: that version, and the tiles' paths. */
     @RequiredArgsConstructor
-    static final class Changes {
+    static class Changes {
         final String from;
         final Set<String> changed, removed;
     }
@@ -87,7 +91,7 @@ final class MapServer {
                 return new Changes(have, paths(since.getAsJsonObject(have), "changed"),
                     paths(since.getAsJsonObject(have), "removed"));
             }
-            String from = o != null && o.has("from") ? o.get("from").getAsString() : null;
+            String from = string(o, "from");
             return isSafeVersion(from) ? new Changes(from, paths(o, "changed"), paths(o, "removed")) : null;
         }, callback, null, MAX_BODY_BYTES);
     }
@@ -124,8 +128,14 @@ final class MapServer {
     static final int MAX_PICTURE_SIDE = 1024;
 
     static String safeVersion(JsonObject versions, String which) {
-        String version = versions != null && versions.has(which) ? versions.get(which).getAsString() : null;
+        String version = string(versions, which);
         return isSafeVersion(version) ? version : null;
+    }
+
+    /** A member's text, or null when it is absent, null, an object or a list. */
+    static String string(JsonObject o, String key) {
+        var value = o == null ? null : o.get(key);
+        return value != null && value.isJsonPrimitive() ? value.getAsString() : null;
     }
 
     /** A data version's file ({@link WorldData#FILE}); null when it cannot be had. */
@@ -139,15 +149,15 @@ final class MapServer {
     }
 
     /**
-     * A map version's files, made once per version from the game's data: its map list, which map draws each region
-     * several maps claim, its places (what the map shows and the planner uses, {@link MapData#read}) and the planner's
-     * tables ({@link com.hdmapreforged.RouteFiles}).
+     * A map version's one file the plugin reads, made once per version from the game's data: its map list, which map
+     * draws each region several maps claim, its places (what the map shows and the planner uses, {@link MapData#read})
+     * and the planner's tables ({@link com.hdmapreforged.RouteFiles}).
      */
-    static final List<String> MAP_FILES = List.of("maps.json", "regions.json", "places.json", "route.zip");
+    static final String ROUTE_ZIP = "route.zip";
 
-    /** One of {@link #MAP_FILES} of a map version, as sent; null when it cannot be had. Calls back on any thread. */
-    void mapFile(String version, String name, Consumer<byte[]> callback) {
-        get(isSafeVersion(version) && MAP_FILES.contains(name) ? url("maps", version, name) : null, body -> body, callback, null, MAX_BODY_BYTES);
+    /** A map version's route.zip, as sent; null when it cannot be had. Calls back on any thread. */
+    void mapFile(String version, Consumer<byte[]> callback) {
+        get(isSafeVersion(version) ? url("maps", version, ROUTE_ZIP) : null, body -> body, callback, null, MAX_BODY_BYTES);
     }
 
     /**
@@ -159,21 +169,31 @@ final class MapServer {
             callback.accept(fallback);
             return;
         }
-        http.newCall(new Request.Builder().url(url).build()).enqueue(new Callback() {
+        Call download = http.newCall(new Request.Builder().url(url).build());
+        calls.add(download);
+        download.enqueue(new Callback() {
             public void onFailure(Call call, IOException e) {
+                calls.remove(call);
                 callback.accept(fallback);
             }
 
             public void onResponse(Call call, Response response) {
+                calls.remove(call);
                 T value = fallback;
                 try (var body = response.body()) {
                     if (response.isSuccessful() && body != null) {
                         value = parse.apply(TileCache.readBody(body, max));
                     }
-                } catch (IOException | RuntimeException e) {
+                } catch (IOException | RuntimeException | StackOverflowError e) {
                 }
                 callback.accept(value == null ? fallback : value);
             }
         });
+    }
+
+    /** The plugin stops: what is on the way is not wanted. */
+    void cancel() {
+        calls.forEach(Call::cancel);
+        calls.clear();
     }
 }

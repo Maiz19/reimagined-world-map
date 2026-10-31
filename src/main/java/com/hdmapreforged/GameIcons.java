@@ -8,7 +8,7 @@ import net.runelite.api.worldmap.*;
 import net.runelite.client.util.*;
 
 /** The game's own world map icons, read from the client: drawn as the game's icons, and so our icons look like them. */
-final class GameIcons {
+class GameIcons {
     static final Map<Integer, BufferedImage> ELEMENT_SPRITES = new ConcurrentHashMap<>();
 
     static boolean hasElements() {
@@ -37,7 +37,8 @@ final class GameIcons {
                 }
                 BufferedImage image = config == null ? null : icon(config);
                 if (image != null) {
-                    ELEMENT_SPRITES.put(id, image);
+                    // A picture of ours put meanwhile on the Swing thread (the fairy rings') stays.
+                    ELEMENT_SPRITES.putIfAbsent(id, image);
                 }
             }
             left.remove();

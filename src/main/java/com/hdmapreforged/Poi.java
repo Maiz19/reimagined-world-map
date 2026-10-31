@@ -6,14 +6,18 @@ import net.runelite.api.coords.*;
 
 /** An icon on the map. */
 @RequiredArgsConstructor
-final class Poi {
+class Poi {
     @RequiredArgsConstructor
-    static final class Link {
+    static class Link {
         final String label;
         final WorldPoint point;
         /** Null when no map draws it. */
         final BaseMap map;
         final Needs needs;
+
+        private Link() {
+            this(null, null, null, Needs.NONE);
+        }
     }
 
     final PoiType type;
@@ -52,6 +56,11 @@ final class Poi {
     final List<Poi> members = new ArrayList<>();
     /** Other things at the same place this icon stands for. */
     final List<Poi> nearby = new ArrayList<>();
+
+    /** As places.json leaves out what it lacks. */
+    private Poi() {
+        this(null, null, null, null, null, Needs.NONE, null, null, null);
+    }
 
     List<Link> links() {
         return Collections.unmodifiableList(links);

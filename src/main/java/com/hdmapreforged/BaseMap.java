@@ -7,7 +7,7 @@ import lombok.*;
  * dungeons the game's map lacks, which show the map of everything's tiles ({@code tiles}).
  */
 @RequiredArgsConstructor
-final class BaseMap {
+class BaseMap {
     static final int SURFACE = 0, FULL = -1;
 
     final int id;

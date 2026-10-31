@@ -24,8 +24,9 @@ final class GameWalk {
         boolean shut(int x, int y, int z, int dx, int dy);
     }
 
+    /** No {@code map}: {@code shut} alone says (the game's own collision, on the HD minimap). */
     static boolean open(CollisionMap map, Shut shut, int x, int y, int z, int dx, int dy) {
-        return map.canStep(x, y, z, dx, dy) && (shut == null || !shut.shut(x, y, z, dx, dy));
+        return (map == null || map.canStep(x, y, z, dx, dy)) && (shut == null || !shut.shut(x, y, z, dx, dy));
     }
 
     /** A route's walk as the game would take it; pieces the game cannot do as short keep the route's tiles. */
@@ -131,8 +132,7 @@ final class GameWalk {
     /** Whether {@code points[i..j]} steps from (x, y) by (mx, my) itself (so a door it opens may be crossed). */
     static boolean crossed(int[] points, int i, int j, int x, int y, int mx, int my) {
         for (int k = i; k < j; k++) {
-            if (x(points[k]) == x && y(points[k]) == y && x(points[k + 1]) == x + mx
-                && y(points[k + 1]) == y + my) {
+            if (x(points[k]) == x && y(points[k]) == y && x(points[k + 1]) == x + mx && y(points[k + 1]) == y + my) {
                 return true;
             }
         }
@@ -142,8 +142,7 @@ final class GameWalk {
     /** Whether {@code piece} crosses an obstacle (vines, rocks) that {@code points[i..j]} kept clear of. */
     static boolean newObstacle(CollisionMap map, int[] piece, int[] points, int i, int j) {
         for (int t : piece) {
-            if (map.isObstacle(x(t), y(t), t)
-                && Arrays.stream(points, i, j + 1).noneMatch(p -> p == t)) {
+            if (map.isObstacle(x(t), y(t), t) && Arrays.stream(points, i, j + 1).noneMatch(p -> p == t)) {
                 return true;
             }
         }
@@ -157,11 +156,17 @@ final class GameWalk {
     static int[] path(CollisionMap map, Shut shut, int from, int[] goals) {
         int z = z(from), ox = x(from) - HALF, oy = y(from) - HALF, size = HALF * 2;
         boolean[] wanted = new boolean[size * size];
+        boolean any = false;
         for (int to : goals) {
             int tx = x(to) - ox, ty = y(to) - oy;
             if (z(to) == z && tx >= 0 && ty >= 0 && tx < size && ty < size) {
                 wanted[ty * size + tx] = true;
+                any = true;
             }
+        }
+        if (!any) {
+            // None within the area searched (a target one can stand on, a jump far off): none is reached.
+            return null;
         }
         // Direction each tile was reached from; -1 not reached.
         byte[] via = new byte[size * size];

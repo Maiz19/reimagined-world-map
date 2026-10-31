@@ -2,37 +2,26 @@ package com.hdmapreforged;
 
 import java.util.*;
 import java.util.function.*;
-import java.util.stream.*;
 import lombok.*;
 import net.runelite.api.coords.*;
 
 /**
  * Where the game's world map draws part of the game elsewhere (the Kalphite Lair beside the desert caves,
  * floor 2 as floor 0): turns drawn coordinates into the game's own. Also where it draws the floors above a part
- * flat on the ground floor (Keldagrim's houses). From the map version's {@code world_map_moves.tsv}.
+ * flat on the ground floor (Keldagrim's houses). From the map version's world map moves.
  */
-final class WorldMapMoves {
-    @RequiredArgsConstructor
-    static final class Move {
-        final int map, x, y, width, height, dx, dy, plane, planes;
-    }
-
+class WorldMapMoves {
     /**
-     * Every part listed, in the file's order, the ones drawn where they are with floors drawn flat too: for
-     * {@link #floorsDrawnFlat}. Map id, x y width height, dx dy floor [floors].
+     * A part listed (map id, x y width height, dx dy floor, floors): every one in the file's order, the ones drawn where
+     * they are with floors drawn flat too, for {@link #floorsDrawnFlat}; {@link RouteTables#moves} those drawn elsewhere.
      */
-    static final RouteFiles.Table<List<Move>> ALL = new RouteFiles.Table<>(() -> Pathfinder.table(RouteFiles.DIR
-        + "world_map_moves.tsv", c -> {
-            var v = Pathfinder.ints(String.join(" ", c));
-            return new Move(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v.length > 8 ? v[8] : 1);
-        }));
-    /** The parts drawn elsewhere. */
-    static final RouteFiles.Table<List<Move>> MOVES = new RouteFiles.Table<>(() -> ALL.get().stream()
-        .filter(move -> move.dx != 0 || move.dy != 0 || move.plane != 0).collect(Collectors.toList()));
+    static class Move {
+        int map, x, y, width, height, dx, dy, plane, planes;
+    }
 
     /** The last move that fits: whole map squares are listed before zones, so a zone's (finer) wins, as in the game. */
     static Move last(Predicate<Move> fits) {
-        return last(MOVES.get(), fits);
+        return last(RouteFiles.tables().moves, fits);
     }
 
     static Move last(List<Move> moves, Predicate<Move> fits) {
@@ -63,7 +52,7 @@ final class WorldMapMoves {
     }
 
     @RequiredArgsConstructor
-    static final class Drawn {
+    static class Drawn {
         final int map;
         final WorldPoint point;
     }
@@ -97,7 +86,7 @@ final class WorldMapMoves {
      * The map of everything draws each part as the part's own map does: ask with that map's id.
      */
     static int floorsDrawnFlat(int mapId, int x, int y) {
-        Move found = last(ALL.get(), move -> move.map == mapId && inside(move, x, y));
+        Move found = last(RouteFiles.tables().allMoves, move -> move.map == mapId && inside(move, x, y));
         return found == null ? 1 : found.planes;
     }
 }

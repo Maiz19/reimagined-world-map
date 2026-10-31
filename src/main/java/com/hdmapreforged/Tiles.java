@@ -1,17 +1,8 @@
 package com.hdmapreforged;
 
-import java.util.*;
-
 /** Route graph nodes as ints: a game tile, or with {@link #SEA} set a 4×4 block of sea tiles on the ground floor. */
 final class Tiles {
     static final int SEA = 1 << 30, CELL = 4;
-
-    /**
-     * The Wilderness's safe zones and the ground south of its edge (the map version's wilderness.tsv); a row of fewer
-     * than four numbers holds no tile.
-     */
-    static final RouteFiles.Table<List<int[]>> ZONES = new RouteFiles.Table<>(() -> Pathfinder.table(RouteFiles.DIR
-        + "wilderness.tsv", c -> Arrays.copyOf(Pathfinder.ints(c[1]), 4)));
 
     static int pack(int x, int y, int z) {
         return (z & 3) << 28 | (x & 0x3fff) << 14 | (y & 0x3fff);
@@ -70,26 +61,28 @@ final class Tiles {
         return x(node) + ", " + y(node) + ", " + z(node) + (isSea(node) ? " (sea)" : "");
     }
 
-    /**
-     * In the Wilderness: above ground x 2944-3391, y 3520-3967, and its dungeons 6400 tiles north of that; not its safe
-     * zones, nor the ground south of its edge ({@link #ZONES}).
-     */
-    static boolean wilderness(int node) {
-        if (isSea(node)) {
-            return false;
-        }
-        int x = x(node), y = y(node);
-        return x >= 2944 && x <= 3391 && (y >= 3520 && y <= 3967 || y >= 9920 && y <= 10367)
-            && !within(ZONES.get(), x, y);
+    /** The Wilderness: x from WILD_X, WILD_SIZE tiles across and deep, its edge at each of WILD_STARTS (above ground, and its dungeons). */
+    static final int WILD_X = 2944, WILD_SIZE = 448;
+    static final int[] WILD_STARTS = {3520, 9920};
+
+    /** The Wilderness level of a tile (level n starts 8(n-1) tiles north of its edge, above or below ground); else 0. */
+    static int wildernessLevel(int x, int y) {
+        int start = y >= WILD_STARTS[1] ? WILD_STARTS[1] : WILD_STARTS[0];
+        return x >= WILD_X && x < WILD_X + WILD_SIZE && y >= start && y < start + WILD_SIZE ? (y - start) / 8 + 1 : 0;
     }
 
-    static boolean within(List<int[]> zones, int x, int y) {
-        for (var zone : zones) {
+    /** In the Wilderness, not its safe zones, nor the ground south of its edge (the map version's zones). */
+    static boolean wilderness(int node) {
+        int x = x(node), y = y(node);
+        if (isSea(node) || wildernessLevel(x, y) <= 0) {
+            return false;
+        }
+        for (var zone : RouteFiles.tables().zones) {
             if (x >= zone[0] && x <= zone[1] && y >= zone[2] && y <= zone[3]) {
-                return true;
+                return false;
             }
         }
-        return false;
+        return true;
     }
 
     /** On the same floor (the sea's is 0) and within {@code radius} tiles. */

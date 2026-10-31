@@ -41,7 +41,7 @@ import okhttp3.*;
     name = "Reimagined World Map",
     internalName = "reimagined-world-map",
     description = "A zoomable world map with routes, teleports, dungeons and a search for monsters, shops and items",
-    tags = {"map", "world", "worldmap", "teleport", "dungeon", "route", "sailing", "search"}
+    tags = {"map", "world", "worldmap", "teleport", "dungeon", "fairy", "spirit", "sailing", "route", "search"}
 )
 public class HdMapReforgedPlugin extends Plugin {
     /** Unlocks are read at most this often while things change; quest states this often at all. */
@@ -117,7 +117,6 @@ public class HdMapReforgedPlugin extends Plugin {
     MapScreen screen, fullScreen;
     BigWindow fullMap;
     IconLayer[] gameIcons = new IconLayer[0];
-    GraveMarker[] graves = new GraveMarker[0];
     final HotkeyListener mapKey = new HotkeyListener(() -> config.openMapKey()) {
         public void keyPressed(KeyEvent e) {
             // A key that types goes to the chat, an input box or an interface taking keys, not to the map.
@@ -133,7 +132,7 @@ public class HdMapReforgedPlugin extends Plugin {
     final KeyListener escape = new Escape();
 
     /** Escape closes the map over the game while it is open. */
-    final class Escape extends KeyAdapter implements KeyListener {
+    class Escape extends KeyAdapter implements KeyListener {
         public void keyPressed(KeyEvent e) {
             var open = fullMap;
             if (e.getKeyCode() == KeyEvent.VK_ESCAPE && open != null && open.isOpen()) {
@@ -206,19 +205,15 @@ public class HdMapReforgedPlugin extends Plugin {
         tiles.configure(config.diskCacheMb());
 
         var itemNames = new ItemNames(clientThread, itemManager);
-        screen = new MapScreen(tiles, config, this::worldInUse, itemNames, this::togglePopOut);
-        fullScreen = new MapScreen(tiles, config, this::worldInUse, itemNames, () -> fullMap.close());
+        screen = new MapScreen(tiles, config, this::worldInUse, itemNames);
+        fullScreen = new MapScreen(tiles, config, this::worldInUse, itemNames);
         fullMap = new BigWindow(client, fullScreen, config.fullMapBounds(),
             bounds -> configManager.setConfiguration(GROUP, "fullMapBounds", bounds),
             key -> config.openMapKey().matches(key));
         keyManager.registerKeyListener(escape);
         keyManager.registerKeyListener(mapKey);
-        panel = new MapPanel(() -> fullMap.open(), this::togglePopOut, this::showOnMap, party,
-            fullScreen::placeName);
-        button = NavigationButton.builder()
-            .tooltip("Reimagined World Map")
-            .icon(PoiIcons.icon(16, "NAVIGATION"))
-            .priority(6)
+        panel = new MapPanel(() -> fullMap.open(), this::togglePopOut, this::showOnMap, party, fullScreen::placeName);
+        button = NavigationButton.builder().tooltip("Reimagined World Map").icon(PoiIcons.icon(16, "NAVIGATION")).priority(6)
             .panel(panel)
             .build();
         sidebar(config.sidebar());
@@ -231,12 +226,17 @@ public class HdMapReforgedPlugin extends Plugin {
         route.setSidebar(panel::showRoute, this::showOnMap);
         panel.setTours(route.sidebarTours(panel::redoTours));
         gameIcons = new IconLayer[]{gameIconLayer(screen), gameIconLayer(fullScreen)};
-        graves = new GraveMarker[]{new GraveMarker(screen.view), new GraveMarker(fullScreen.view)};
         clientThread.invoke(this::checkGrave);
         var pictures = new NpcImages((id, done) -> {
             String version = tiles.version;
             serverCache.bytes("npcs", version, id + ".png", fetch -> server.npcPictureBytes(version, id, fetch),
-                bytes -> done.accept(decode(bytes)));
+                bytes -> {
+                    var image = decode(bytes);
+                    if (bytes != null && image == null) {
+                        serverCache.forget("npcs", version, id + ".png");
+                    }
+                    done.accept(image);
+                });
         });
         for (var on : new MapScreen[]{screen, fullScreen}) {
             on.view.linesChoice = value -> configManager.setConfiguration(GROUP, "linesOff", value);
@@ -288,7 +288,7 @@ public class HdMapReforgedPlugin extends Plugin {
     /** Daemon threads called {@code name} at {@code priority}, for the plugin's own executors. */
     static ThreadFactory threads(String name, int priority) {
         return runnable -> {
-            Thread thread = new Thread(runnable, name);
+            var thread = new Thread(runnable, name);
             thread.setDaemon(true);
             thread.setPriority(priority);
             return thread;
@@ -322,14 +322,16 @@ public class HdMapReforgedPlugin extends Plugin {
         if (fullScreen != null) {
             fullScreen.stop();
         }
-        if (io != null) {
-            io.shutdownNow();
-        }
-        if (dataIo != null) {
-            dataIo.shutdownNow();
+        for (var pool : new ExecutorService[]{io, dataIo}) {
+            if (pool != null) {
+                pool.shutdownNow();
+            }
         }
         if (tiles != null) {
             tiles.clear();
+        }
+        if (server != null) {
+            server.cancel();
         }
         lastPlayer = null;
         unlocks = null;
@@ -343,7 +345,6 @@ public class HdMapReforgedPlugin extends Plugin {
         RouteFiles.clear();
         screen = null;
         gameIcons = new IconLayer[0];
-        graves = new GraveMarker[0];
         fullScreen = null;
         fullMap = null;
         if (panel != null) {
@@ -365,7 +366,7 @@ public class HdMapReforgedPlugin extends Plugin {
     @Subscribe
     public void onGameTick(GameTick tick) {
         ticks++;
-        Player player = client.getLocalPlayer();
+        var player = client.getLocalPlayer();
         if (player == null) {
             return;
         }
@@ -421,7 +422,7 @@ public class HdMapReforgedPlugin extends Plugin {
         if (quests) {
             lastQuestTick = ticks;
         }
-        if (unlocks.sameAs(previous)) {
+        if (unlocks.equals(previous)) {
             // Varbits change all the time; rebuilding the detail card for nothing made the map stutter.
             unlocks = previous;
             return;
@@ -446,11 +447,7 @@ public class HdMapReforgedPlugin extends Plugin {
         if (ownEntryIndex(client.getMenu().getMenuEntries()) >= 0) {
             return;
         }
-        client.getMenu().createMenuEntry(-1)
-            .setOption(MENU_OPTION)
-            .setTarget("")
-            .setType(MenuAction.RUNELITE)
-            .setParam1(widget)
+        client.getMenu().createMenuEntry(-1).setOption(MENU_OPTION).setTarget("").setType(MenuAction.RUNELITE).setParam1(widget)
             .onClick(entry -> toggleFullMap());
     }
 
@@ -473,7 +470,7 @@ public class HdMapReforgedPlugin extends Plugin {
      */
     volatile boolean takesKeys;
     volatile int interfacesChanged = 2;
-    int clientTicks;
+    int clientTicks, cameraYaw;
 
     @Subscribe
     public void onWidgetLoaded(WidgetLoaded event) {
@@ -483,6 +480,18 @@ public class HdMapReforgedPlugin extends Plugin {
     @Subscribe
     public void onWidgetClosed(WidgetClosed event) {
         interfacesChanged = 2;
+    }
+
+    /** Each frame (not each client tick, 50 a second): the map turns as smoothly as the camera. */
+    @Subscribe
+    public void onBeforeRender(BeforeRender frame) {
+        // 0 to 16383 (eight steps a unit of the game's 2048) counter-clockwise from north; the minimap turns clockwise
+        // by it.
+        int yaw = config.turnWithCamera() ? client.getCameraYaw() & 16383 : 0;
+        if (client.getGameState() == LOGGED_IN && yaw != cameraYaw) {
+            cameraYaw = yaw;
+            screens(s -> s.view.setTurn(yaw * Math.PI / 8192));
+        }
     }
 
     @Subscribe
@@ -571,8 +580,7 @@ public class HdMapReforgedPlugin extends Plugin {
     static int ownEntryIndex(MenuEntry[] entries) {
         for (int i = 0; i < entries.length; i++) {
             var entry = entries[i];
-            if (entry.getType() == MenuAction.RUNELITE && MENU_OPTION.equals(entry.getOption())
-                && isOrb(entry.getParam1())) {
+            if (entry.getType() == MenuAction.RUNELITE && MENU_OPTION.equals(entry.getOption()) && isOrb(entry.getParam1())) {
                 return i;
             }
         }
@@ -603,8 +611,7 @@ public class HdMapReforgedPlugin extends Plugin {
             || event.getVarpId() == AIDE_TELE_TIMER || event.getVarpId() == SLUG2_REGIONUID) {
             unlocksDirty = true;
         }
-        if (event.getVarbitId() == VarbitID.GRAVESTONE_VISIBLE
-            || event.getVarpId() == GRAVESTONE_CREATION_DEATH_COORD) {
+        if (event.getVarbitId() == VarbitID.GRAVESTONE_VISIBLE || event.getVarpId() == GRAVESTONE_CREATION_DEATH_COORD) {
             checkGrave();
         }
     }
@@ -612,14 +619,14 @@ public class HdMapReforgedPlugin extends Plugin {
     /** One's grave from the game: standing while GRAVESTONE_VISIBLE is not 0 (not a flag), on the tile one died on. */
     void checkGrave() {
         int coord = client.getVarpValue(GRAVESTONE_CREATION_DEATH_COORD);
-        showGrave(client.getVarbitValue(VarbitID.GRAVESTONE_VISIBLE) != 0 && coord > 0 ? WorldPoint.fromCoord(coord)
-            : null);
+        showGrave(client.getVarbitValue(VarbitID.GRAVESTONE_VISIBLE) != 0 && coord > 0 ? WorldPoint.fromCoord(coord) : null);
     }
 
     void showGrave(WorldPoint at) {
         invokeLater(() -> {
-            for (var grave : graves) {
-                grave.set(at);
+            if (screen != null) {
+                screen.view.setGrave(at);
+                fullScreen.view.setGrave(at);
             }
         });
     }
@@ -628,11 +635,23 @@ public class HdMapReforgedPlugin extends Plugin {
     @Subscribe
     public void onProfileChanged(ProfileChanged event) {
         route.tileMarkersCleared();
+        // What is read only when made: the big map's place, the custom routes and an open Icons panel.
+        invokeLater(() -> {
+            if (fullMap != null) {
+                fullMap.restore(config.fullMapBounds());
+                route.redoTours();
+                for (var s : new MapScreen[]{screen, fullScreen}) {
+                    if (s.iconsShown) {
+                        s.showIcons(true);
+                    }
+                }
+            }
+        });
     }
 
     @Subscribe
     public void onGameStateChanged(GameStateChanged event) {
-        GameState game = event.getGameState();
+        var game = event.getGameState();
         if (game == LOGGED_IN) {
             unlocksDirty = true;
             lastQuestTick = ticks - QUEST_TICKS;
@@ -687,8 +706,19 @@ public class HdMapReforgedPlugin extends Plugin {
                 screens(s -> s.view.setLinesOff(config.linesOff()));
                 return;
             case "iconsOff":
-                screens(s -> s.view.setIconsOff(config.iconsOff()));
+                // The other map's Icons panel too, so its ticks match its map.
+                screens(s -> {
+                    s.view.setIconsOff(config.iconsOff());
+                    s.icons.changed.run();
+                });
                 return;
+            case "questStatus":
+            case "hideCompletedQuests":
+            case "markLocked":
+            case "onlyUsable":
+                // Their boxes on the other map's Icons panel (and on both after a profile switch).
+                screens(s -> s.icons.changed.run());
+                break;
             case "sidebar":
                 sidebar(config.sidebar());
                 return;
@@ -753,7 +783,8 @@ public class HdMapReforgedPlugin extends Plugin {
                     // data), not only an hour on.
                     retryLater(started, RETRY_MS, () -> resolveVersions(true));
                 }
-                if (wantedVersion != null && currentVersion == null) {
+                // Not while its files are on the way or read: a failure there says so itself (useVersion).
+                if (wantedVersion != null && currentVersion == null && loadingVersion == null) {
                     screens(s -> s.view.setMapUnavailable(true));
                 }
                 return;
@@ -790,8 +821,7 @@ public class HdMapReforgedPlugin extends Plugin {
             return;
         }
         String file = WorldData.FILE + ".json";
-        serverCache.bytes("data", version, file, fetch -> server.data(version, WorldData.FILE, fetch),
-            bytes -> runData(() -> {
+        serverCache.bytes("data", version, file, fetch -> server.data(version, WorldData.FILE, fetch), bytes -> runData(() -> {
                 var read = bytes == null ? null : WorldData.parse(gson, bytes);
                 if (started != life.get()) {
                     return;
@@ -810,15 +840,16 @@ public class HdMapReforgedPlugin extends Plugin {
                 if (bytes == null) {
                     versionsAsked = System.currentTimeMillis() - versionsAskMs + RETRY_MS;
                 } else {
+                    serverCache.forget("data", version, file);
                     worldVersion = version;
                 }
             }));
     }
 
     /**
-     * Shows a map version once its four files are had (kept on disk once seen, else the server's): its map list with
-     * its region table, its places and its route tables, read here; its tiles switch with them. Until all four are
-     * usable the version shown stays, and the server is asked again ({@link #retryMap}). Data thread.
+     * Shows a map version once its route.zip is had (kept on disk once seen, else the server's): its map list with its
+     * region table, its places and its route tables, read here; its tiles switch with them. Until it is usable the
+     * version shown stays, and the server is asked again ({@link #retryMap}). Data thread.
      */
     void useVersion(String version) {
         int started = life.get();
@@ -833,13 +864,7 @@ public class HdMapReforgedPlugin extends Plugin {
             return;
         }
         loadingVersion = version;
-        var files = new ArrayList<CompletableFuture<byte[]>>();
-        for (String name : MAP_FILES) {
-            var file = new CompletableFuture<byte[]>();
-            serverCache.bytes("maps", version, name, fetch -> server.mapFile(version, name, fetch), file::complete);
-            files.add(file);
-        }
-        CompletableFuture.allOf(files.toArray(new CompletableFuture<?>[0])).thenRun(() -> runData(() -> {
+        serverCache.bytes("maps", version, ROUTE_ZIP, fetch -> server.mapFile(version, fetch), zip -> runData(() -> {
             if (started != life.get()) {
                 return;
             }
@@ -847,35 +872,42 @@ public class HdMapReforgedPlugin extends Plugin {
                 loaded(version);
                 return;
             }
-            // The map list, its region table, the places and the route tables.
-            var got = files.stream().map(CompletableFuture::join).toArray(byte[][]::new);
-            boolean all = Arrays.stream(got).allMatch(Objects::nonNull);
-            var maps = got[0] == null ? null : BaseMaps.parse(gson, MapServer.text(got[0]));
             Map<String, byte[]> routeFiles = null;
+            RouteTables tables = null;
             MapData data = null;
-            if (all && maps != null && maps.byId(BaseMap.SURFACE) != null) {
+            BaseMaps maps = null;
+            if (zip != null) {
                 try {
-                    var unzipped = RouteFiles.unzip(got[3]);
-                    // The planner's passages: a route.zip made before them would plan with no stairs or caves.
+                    var unzipped = RouteFiles.unzip(zip);
+                    maps = BaseMaps.parse(gson, MapServer.text(unzipped.get("maps.json")));
+                    // The planner's passages and tables: a route.zip made before them would plan with no stairs or caves.
                     Objects.requireNonNull(unzipped.get("passages.tsv"));
-                    maps.regions = Objects.requireNonNull(gson.fromJson(MapServer.text(got[1]), RegionTable.class));
+                    Objects.requireNonNull(maps.byId(BaseMap.SURFACE));
+                    var read = RouteFiles.tables(gson, unzipped);
+                    maps.regions = Objects.requireNonNull(gson.fromJson(MapServer.text(unzipped.get("regions.json")), RegionTable.class));
                     maps.version = version;
                     // Its icons are drawn where its world map moves put them: its tables for this thread's read alone,
                     // the version shown keeps its own for the planner and the screens until this one is shown.
-                    RouteFiles.READING.set(unzipped);
+                    RouteFiles.READING.set(read);
                     try {
-                        data = MapData.read(gson, MapServer.text(got[2]), maps, version);
+                        data = MapData.read(gson, MapServer.text(unzipped.get("places.json")), maps, version);
                     } finally {
                         RouteFiles.READING.remove();
                     }
                     routeFiles = unzipped;
-                } catch (IOException | RuntimeException e) {
+                    tables = read;
+                } catch (IOException | RuntimeException | StackOverflowError e) {
                 }
             }
+            // Stopped while its files were read: nothing of it stays while off or reaches a later run (its screens,
+            // kept files and retry, nor loadingVersion, which may already be that run's).
+            if (started != life.get()) {
+                return;
+            }
             if (data == null) {
-                if (all) {
-                    // Complete but unusable: the kept copies are passed over once, or every retry would read them.
-                    MAP_FILES.forEach(name -> serverCache.stale.add("maps/" + version + "/" + name));
+                if (zip != null) {
+                    // Had but unusable: the kept copy is passed over once, or every retry would read it.
+                    serverCache.stale.add("maps/" + version + "/" + ROUTE_ZIP);
                 }
                 if (currentVersion == null) {
                     screens(s -> s.view.setMapUnavailable(true));
@@ -884,7 +916,7 @@ public class HdMapReforgedPlugin extends Plugin {
                 retryMap(started, version);
                 return;
             }
-            switchVersion(version, maps, data, routeFiles, started);
+            switchVersion(version, maps, data, routeFiles, tables, started);
         }));
     }
 
@@ -922,7 +954,7 @@ public class HdMapReforgedPlugin extends Plugin {
 
     /** Runs {@code task} on the data thread after {@code delayMs} unless the plugin stopped meanwhile. */
     void retryLater(int started, long delayMs, Runnable task) {
-        Timer timer = new Timer((int) delayMs, e -> runData(() -> {
+        var timer = new Timer((int) delayMs, e -> runData(() -> {
             if (started == life.get()) {
                 task.run();
             }
@@ -934,14 +966,15 @@ public class HdMapReforgedPlugin extends Plugin {
 
     /** The waiting request becomes {@code next}; the one before is stopped. */
     void retry(Timer next) {
-        Timer previous = retry;
+        var previous = retry;
         retry = next;
         if (previous != null) {
             previous.stop();
         }
     }
 
-    void switchVersion(String version, BaseMaps maps, MapData data, Map<String, byte[]> routeFiles, int started) {
+    void switchVersion(String version, BaseMaps maps, MapData data, Map<String, byte[]> routeFiles, RouteTables tables,
+        int started) {
         var cache = tiles;
         String current = cache.version;
         if (current != null && !current.equals(version)) {
@@ -959,21 +992,25 @@ public class HdMapReforgedPlugin extends Plugin {
                 if (changes != null && changes.from.equals(current)) {
                     cache.upgrade(current, version, changes.changed, changes.removed);
                 }
-                publish(version, maps, data, routeFiles, started);
+                publish(version, maps, data, routeFiles, tables, started);
             }));
             return;
         }
-        publish(version, maps, data, routeFiles, started);
+        publish(version, maps, data, routeFiles, tables, started);
     }
 
     /**
      * A version's tiles, maps, places and route tables to the screens, the planner and the requirements read; only now
      * is it remembered for the next start and are the other versions' kept files removed. Data thread.
      */
-    void publish(String version, BaseMaps maps, MapData data, Map<String, byte[]> routeFiles, int started) {
+    void publish(String version, BaseMaps maps, MapData data, Map<String, byte[]> routeFiles, RouteTables tables,
+        int started) {
         loaded(version);
         // Before the needs below: its gates and shortcuts are among them.
-        RouteFiles.use(routeFiles);
+        // Stopped just now: shutDown's clear may be done, and a later run may use its own files already.
+        if (!RouteFiles.use(routeFiles, tables, () -> started == life.get())) {
+            return;
+        }
         tiles.setVersion(version);
         int generation = dataGeneration.incrementAndGet();
         currentVersion = version;
@@ -982,13 +1019,14 @@ public class HdMapReforgedPlugin extends Plugin {
         serverCache.prune("maps", version);
         serverCache.prune("npcs", version);
         screens(s -> s.view.setMapUnavailable(false));
-        // The places' needs and those of the bundled gates and shortcuts: a quest not watched counts as done.
-        var reads = new Unlocks.Watched(Stream.concat(Poi.flatten(data.pois).stream().flatMap(poi -> Stream.concat(
+        // The places' needs, the game's icons' own and those of the bundled gates and shortcuts: a quest not watched
+        // counts as done.
+        var reads = new Unlocks.Watched(Stream.concat(Stream.concat(Poi.flatten(data.pois).stream(),
+            Poi.flatten(data.gameIcons).stream()).flatMap(poi -> Stream.concat(
             poi.members().stream().map(member -> member.needs), poi.links().stream().map(link -> link.needs))),
             RouteSource.fixedNeeds().stream()).collect(Collectors.toList()));
         // Quest start icons show their quest's state.
-        data.icons.stream().filter(icon -> icon.poi.type == PoiType.QUEST_START)
-            .forEach(icon -> reads.add(icon.poi.name));
+        data.icons.stream().filter(icon -> icon.poi.type == PoiType.QUEST_START).forEach(icon -> reads.add(icon.poi.name));
         watched = reads;
         route.setIcons(data.icons);
         clientThread.invokeLater(() -> unlocksDirty = true);

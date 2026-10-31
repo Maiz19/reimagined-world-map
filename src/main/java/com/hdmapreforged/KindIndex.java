@@ -25,7 +25,15 @@ final class KindIndex {
         /** Null for skilling spots. */
         final PoiType type;
         final String page;
-        final List<Entry> entries = new ArrayList<>();
+        final transient List<Entry> entries = new ArrayList<>();
+        /** In places.json: its entries by number, and its places as the search lists them, those close together in one
+         * town merged ("Catherby, 4 spots"), each led by the entry numbered in {@link #firsts}. */
+        int[] places = {}, firsts = {};
+        List<Spawns.Group> groups = List.of();
+
+        private Kind() {
+            this(null, null, null);
+        }
     }
 
     final List<Kind> kinds;

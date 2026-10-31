@@ -17,7 +17,7 @@ import net.runelite.api.*;
  * (items, worn, skills, this session) and their experience drops, laid out for the width given. Swing thread.
  */
 @RequiredArgsConstructor
-final class MemberPages {
+class MemberPages {
     static final String[] PAGES = {"Items", "Worn", "Skills", "Session"};
     /** The page of what they gained this session. */
     static final int SESSION = 3;
@@ -68,7 +68,7 @@ final class MemberPages {
         double y0 = top + TABS_H + statusHeight(width), slotW = min(SLOT_W, width / 4.0);
         g.setFont(ROW);
         if (page == SESSION) {
-            paintSession(g, party.members.session(id), x + 4, y0, width - 8, slotW);
+            paintSession(g, party.members.session(id), x + 4, y0, width - 8, slotW, clicks);
         } else if (shared == null) {
             g.setColor(FRIEND);
             wrap(g, PoiType.t("t25"), x + 4, y0 + 16, width - 8);
@@ -100,8 +100,11 @@ final class MemberPages {
         return PartyOverlay.paintXp(g, party.xp(id), party::skill, x + width - 64, y0 + 60);
     }
 
-    /** What a member got this session: the shared drops' worth and the best of them, experience by skill. */
-    void paintSession(Graphics2D g, Session got, double x, double y, double w, double slotW) {
+    /**
+     * What a member got this session: the shared drops' worth and the best of them (named on hover), experience by
+     * skill.
+     */
+    void paintSession(Graphics2D g, Session got, double x, double y, double w, double slotW, Clicks clicks) {
         g.setColor(FRIEND);
         if (got == null) {
             wrap(g, "Nothing gained yet this session.", x, y + 18, (int) w);
@@ -119,6 +122,11 @@ final class MemberPages {
             g.setColor(drop.name != null ? PartyOverlay.UNTRADEABLE : WORLD);
             String worth = drop.name != null ? drop.name : PartyOverlay.coins(drop.value);
             text(g, fit(worth, metrics, (int) (w - slotW)), x + slotW, y + 46 + k * ROW_H);
+            String name = drop.name != null ? drop.name : party.itemName(drop.item);
+            if (name != null) {
+                clicks.add(new RoundRectangle2D.Double(x - 4, y + 22 + k * ROW_H, w + 4, ROW_H, 8, 8), () -> { },
+                    drop.quantity > 1 ? AMOUNT.format(drop.quantity) + " × " + name : name);
+            }
         }
         int[] best = got.best(6);
         double cell = w / 3;
@@ -150,8 +158,8 @@ final class MemberPages {
         }
     }
 
-    /** {@code text} in lines no wider than {@code width}, from the baseline at y down. */
-    static void wrap(Graphics2D g, String text, double x, double y, int width) {
+    /** {@code text} in lines no wider than {@code width}, from the baseline at y down; the last line's baseline. */
+    static double wrap(Graphics2D g, String text, double x, double y, int width) {
         var metrics = g.getFontMetrics();
         var line = new StringBuilder();
         for (String word : text.split(" ")) {
@@ -163,6 +171,7 @@ final class MemberPages {
             line.append(line.length() > 0 ? " " : "").append(word);
         }
         text(g, line.toString(), x, y);
+        return y;
     }
 
     void slot(Graphics2D g, double x, double y, double w, int id, int quantity) {

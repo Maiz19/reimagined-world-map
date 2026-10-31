@@ -16,6 +16,8 @@ final class ItemSources {
         final String shop;
         final WorldPoint point;
         final int stock;
+        /** The name of its place as the search shows it (the map server's); "" for none. */
+        final String location;
     }
 
     @RequiredArgsConstructor
@@ -30,6 +32,7 @@ final class ItemSources {
     static final class Ground {
         final WorldPoint point;
         final int count;
+        final String location;
     }
 
     /** A monster that drops the item, and how rarely ("Always", "3/128"). */
@@ -45,6 +48,8 @@ final class ItemSources {
         final int places;
         /** The first of its page's drop tables that drops the item ("" unnamed): the monster's Drops tab shows it. */
         final String table;
+        /** As {@link WorldData.Drop#chance}. */
+        final double chance;
     }
 
     /** The item's name. */

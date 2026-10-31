@@ -9,7 +9,7 @@ import java.util.function.*;
 import net.runelite.api.coords.*;
 
 /** A map version's map list (our map server's maps.json); its region table decides where bounds overlap. */
-final class BaseMaps {
+class BaseMaps {
     final List<BaseMap> sorted;
     final Map<Integer, BaseMap> byId = new HashMap<>();
     RegionTable regions = new RegionTable();
@@ -29,7 +29,7 @@ final class BaseMaps {
     }
 
     /** maps.json's entries: {@code {mapId, name, bounds: [[minX, minY], [maxX, maxY]], center: [x, y], tiles}}. */
-    static final class Entry {
+    static class Entry {
         int mapId;
         String name;
         int[][] bounds;
@@ -146,8 +146,7 @@ final class BaseMaps {
             // Its floor's ground is drawn by the map the table names (and every map with the same tiles).
             return map.contains(game.getX(), game.getY()) && drawnFloor(map, game) >= 0;
         }
-        return map != null && draws(map, game.getX(), game.getY())
-            && !WorldMapMoves.covers(map.id, game.getX(), game.getY());
+        return map != null && draws(map, game.getX(), game.getY()) && !WorldMapMoves.covers(map.id, game.getX(), game.getY());
     }
 
     /**

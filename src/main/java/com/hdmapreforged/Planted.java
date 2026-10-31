@@ -14,10 +14,6 @@ final class Planted {
     static final String KEY = "plantedSpiritTrees";
     /** The patch state of a grown spirit tree one can travel by. */
     static final int GROWN = 20;
-    /** As the travel table's stops are named: the patch's varbit, then its regions (list "spirit tree patches"). */
-    static final RouteFiles.Table<Map<String, int[]>> PATCHES = new RouteFiles.Table<>(() -> Pathfinder.pairs(
-        "spirit tree patches", Pathfinder::ints));
-
     volatile Set<String> grown = Collections.emptySet();
 
     /** A stop of the travel table that needs a tree planted ("Only after planting a spirit tree here"). */
@@ -40,12 +36,19 @@ final class Planted {
 
     /** In {@code region}: reads its patch, if it has one. Whether what is known changed. Client thread. */
     boolean update(int region, IntUnaryOperator varbit) {
-        for (var patch : PATCHES.get().entrySet()) {
+        // As the travel table's stops are named: the patch's varbit, then its regions.
+        for (var patch : RouteFiles.tables().patches.entrySet()) {
             int[] read = patch.getValue();
             for (int i = 1; i < read.length; i++) {
                 if (read[i] == region) {
                     String name = patch.getKey();
-                    boolean stands = varbit.applyAsInt(read[0]) == GROWN;
+                    boolean stands;
+                    try {
+                        stands = varbit.applyAsInt(read[0]) == GROWN;
+                    } catch (RuntimeException e) {
+                        // Not a varbit the game has (gone after a game update): not known here.
+                        return false;
+                    }
                     if (stands == grown.contains(name)) {
                         return false;
                     }

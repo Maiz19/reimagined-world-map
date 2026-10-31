@@ -5,7 +5,6 @@ import static com.hdmapreforged.ItemSources.*;
 import static java.util.stream.Collectors.*;
 import com.google.gson.*;
 import java.util.*;
-import java.util.function.*;
 import lombok.*;
 import net.runelite.api.coords.*;
 
@@ -15,11 +14,11 @@ import net.runelite.api.coords.*;
  * they drop; each item's shops, spots on the ground and droppers; the shops' wares; the names to suggest; and which
  * map draws each place where maps overlap, for the map version it names. Immutable.
  */
-final class WorldData {
-    /** The data version's file read: search.json's members as these classes hold them (format 1 is the released plugins'). */
-    static final String FILE = "search2";
-    /** Of search2.json: a file in another format (an older or newer map server) is not read. */
-    static final int FORMAT = 2;
+class WorldData {
+    /** The data version's file read: search.json's members as these classes hold them, the places named (search2.json is 0.3.6's). */
+    static final String FILE = "search3";
+    /** Of search3.json: a file in another format (an older or newer map server) is not read. */
+    static final int FORMAT = 3;
     static final WorldData NONE = new WorldData(emptyMap(), emptyMap(), emptyList(),
         new String[0], new String[0], null, emptyMap());
     /** A shop is where the server puts it: a shop icon or a card this near is that shop. */
@@ -28,7 +27,7 @@ final class WorldData {
     static final int ENDLESS = -1;
 
     @RequiredArgsConstructor
-    static final class Shop {
+    static class Shop {
         final String name;
         final WorldPoint point;
         /** Its shopkeeper's NPC id, for the picture; -1 when not known. */
@@ -38,7 +37,7 @@ final class WorldData {
     }
 
     @RequiredArgsConstructor
-    static final class Drop {
+    static class Drop {
         final int item;
         /** The game's name of the item. */
         final String name;
@@ -50,11 +49,15 @@ final class WorldData {
         final String part;
         /** The monster's version this row is for when not the table's own ("Catacombs of Kourend"); else "". */
         final String version;
+        /** How often: 1 always, else its chance, the words' rough one; -1 not known. */
+        final double chance;
+        /** The least that drops ("5-10": 5). */
+        final long amount;
     }
 
     /** One of a monster's drop tables: the monster's version ("Wilderness Slayer Cave"), a kind of loot. */
     @RequiredArgsConstructor
-    static final class Table {
+    static class Table {
         /** Empty for a page's only table. */
         final String name;
         final List<Drop> drops;
@@ -88,25 +91,28 @@ final class WorldData {
     }
 
     /**
-     * search2.json as the map server writes it, the rows checked there as the plugin once checked them; points as
-     * {@code [x, y, plane]}. Null when it is not search2.json in {@link #FORMAT}.
+     * search3.json as the map server writes it, the rows checked and the places named there; points as
+     * {@code [x, y, plane]}. Null when it is not search3.json in {@link #FORMAT}.
      */
     static WorldData parse(Gson gson, byte[] file) {
         try {
-            var read = gson.newBuilder().registerTypeAdapter(WorldPoint.class, (JsonDeserializer<WorldPoint>) (e, t, c) -> {
-                var at = e.getAsJsonArray();
-                return new WorldPoint(at.get(0).getAsInt(), at.get(1).getAsInt(), at.get(2).getAsInt());
-            }).create().fromJson(MapServer.text(file), Read.class);
+            var read = gson.newBuilder().registerTypeAdapter(WorldPoint.class, POINT).create().fromJson(MapServer.text(file), Read.class);
             return read.format != FORMAT ? null : new WorldData(read.npcs.stream().collect(toMap(n -> key(n.page), n -> n,
                 (a, b) -> b)), read.items.stream().collect(toMap(i -> key(i.page), i -> i, (a, b) -> b)),
                 unmodifiableList(read.shops), read.npcNames, read.itemNames, read.map, read.maps == null ? emptyMap() : read.maps);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | StackOverflowError e) {
             return null;
         }
     }
 
-    /** search2.json's members. */
-    static final class Read {
+    /** A point as the map server's files write it: {@code [x, y, plane]}. */
+    static final JsonDeserializer<WorldPoint> POINT = (e, t, c) -> {
+        var at = e.getAsJsonArray();
+        return new WorldPoint(at.get(0).getAsInt(), at.get(1).getAsInt(), at.get(2).getAsInt());
+    };
+
+    /** search3.json's members. */
+    static class Read {
         int format;
         String map;
         List<Spawns> npcs;
@@ -174,8 +180,7 @@ final class WorldData {
      */
     boolean monsterName(String label) {
         String name = label.trim().toLowerCase(Locale.ROOT);
-        return monsterNames.contains(name) || name.endsWith("s") && monsterNames.contains(name.substring(0,
-            name.length() - 1));
+        return monsterNames.contains(name) || name.endsWith("s") && monsterNames.contains(name.substring(0, name.length() - 1));
     }
 
     /** NPC names starting with or containing {@code typed}, starts first. */

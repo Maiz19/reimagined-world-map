@@ -1,5 +1,6 @@
 package com.hdmapreforged;
 
+import static net.runelite.client.ui.ColorScheme.*;
 import static com.hdmapreforged.PoiType.t;
 import static java.awt.RenderingHints.*;
 import static java.util.Collections.*;
@@ -23,11 +24,13 @@ import static net.runelite.api.gameval.VarbitID.*;
 import static java.lang.Math.*;
 import static java.lang.System.currentTimeMillis;
 import static net.runelite.api.Perspective.*;
+import static net.runelite.api.CollisionDataFlag.*;
 
 import com.hdmapreforged.Route.*;
 import com.hdmapreforged.Route.Step.*;
 import java.awt.*;
 import java.awt.geom.*;
+import java.awt.image.BufferedImage;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
@@ -46,6 +49,7 @@ import net.runelite.api.coords.*;
 import net.runelite.api.events.*;
 import net.runelite.api.gameval.*;
 import net.runelite.api.gameval.InventoryID;
+import net.runelite.api.gameval.SpriteID;
 import net.runelite.api.widgets.WidgetItem;
 import net.runelite.api.widgets.WidgetUtil;
 import net.runelite.client.callback.*;
@@ -54,12 +58,9 @@ import net.runelite.client.config.*;
 import net.runelite.client.eventbus.*;
 import net.runelite.client.events.*;
 import net.runelite.client.plugins.*;
-import net.runelite.client.plugins.cluescrolls.*;
-import net.runelite.client.plugins.cluescrolls.clues.*;
 import net.runelite.client.ui.*;
 import net.runelite.client.ui.overlay.*;
 import net.runelite.client.ui.overlay.worldmap.*;
-import net.runelite.client.util.*;
 
 /**
  * "Path to here": our own route search; only shows a way, never walks, clicks or sends anything.
@@ -80,7 +81,7 @@ public final class RouteFeature implements TourPanel.Actions {
 
     static final Color WALK = new Color(255, 233, 28), JUMP = new Color(190, 120, 255);
     static final Set<String> LOOK_KEYS = Set.of("routeColor", "routeJumpColor", "routeTileFill",
-        "routeTileBorder", "routeTileWidth", "routeMinimap", "routeClearOnArrival",
+        "routeTileBorder", "routeTileWidth", "routeMinimap", "routeItems", "routeClearOnArrival",
         "routeFollowPlugins", "routeStyle", "routeLineWidth");
 
     static final Color[] LEG_COLORS = {
@@ -156,11 +157,13 @@ public final class RouteFeature implements TourPanel.Actions {
     final RouteHouse yourHouse = new RouteHouse(this, house);
     final FairyRingLog fairyRingLog = new FairyRingLog(this);
     // Nothing on the game's own world map: projecting a long route there every frame is too heavy.
-    final List<Overlay> overlays = List.of(new GameOverlay(), new MinimapOverlay(), new ItemsOverlay());
+    final HdMinimap hdMinimap = new HdMinimap();
+    final List<Overlay> overlays = List.of(new GameOverlay(), new MinimapOverlay(), new ItemsOverlay(), hdMinimap);
     /** The Clue Scroll plugin's spots for the clue now and other plugins' world map icons, as the game's map shows them. */
     volatile List<WorldMapPoint> marks = List.of();
     static final Set<String> CORE_POINTS = Set.of("net.runelite.client.plugins.worldmap.MapPoint",
-        "net.runelite.client.plugins.cluescrolls.ClueScrollWorldMapPoint", "net.runelite.client.plugins.party.PartyWorldMapPoint");
+        "net.runelite.client.plugins.party.PartyWorldMapPoint");
+    static final String CLUE_POINT = "net.runelite.client.plugins.cluescrolls.ClueScrollWorldMapPoint";
     final WorldMapPointManager worldMapPoints;
 
     volatile ExecutorService searches, background;
@@ -173,14 +176,12 @@ public final class RouteFeature implements TourPanel.Actions {
     }
 
     void forScreens(Consumer<MapScreen> action) {
-        for (var screen : screens) {
-            action.accept(screen);
-        }
+        List.of(screens).forEach(action);
     }
-    volatile Map<Integer, Integer> ports = Map.of();
     volatile int[] shipwrights = new int[0];
 
     void setIcons(List<MapData.Icon> icons) {
+        this.icons = icons;
         shipwrights = tiles(icons, "Shipwright");
         // The game's icons on the water (the Barracuda Trials' starts), which are sailed to.
         seaSpots = tiles(icons, "Barracuda Trial");
@@ -191,6 +192,8 @@ public final class RouteFeature implements TourPanel.Actions {
         return icons.stream().filter(icon -> kind.equalsIgnoreCase(icon.kind) && icon.location.getPlane() == 0)
             .mapToInt(icon -> pack(icon.location)).distinct().toArray();
     }
+    /** The map version's icons, for the HD minimap. */
+    volatile List<MapData.Icon> icons = List.of();
     /** The game's icons on the water, as tiles. */
     volatile int[] seaSpots = new int[0];
     volatile PlayerState state = PlayerState.UNKNOWN;
@@ -318,18 +321,14 @@ public final class RouteFeature implements TourPanel.Actions {
         // In an instance copying a place on the map (the Watchtower's top floor): that place's tile, as the player's.
         var copied = InstanceCopies.place(clicked.getX(), clicked.getY(), clicked.getPlane());
         var point = copied == null ? clicked : new WorldPoint(copied[0], copied[1], copied[2]);
-        var c = controller;
-        if (c != null && c.target() >= 0) {
+        if (routing()) {
             menuEntry("Clear route", this::clearRoute);
         }
         menuEntry("Route here", () -> routeTo(point));
     }
 
     void menuEntry(String option, Runnable action) {
-        client.getMenu().createMenuEntry(1)
-            .setOption(option)
-            .setTarget("")
-            .setType(MenuAction.RUNELITE)
+        client.getMenu().createMenuEntry(1).setOption(option).setTarget("").setType(MenuAction.RUNELITE)
             .onClick(e -> invokeLater(action));
     }
 
@@ -368,8 +367,7 @@ public final class RouteFeature implements TourPanel.Actions {
         sentAhead = null;
         sentLegs = null;
         sentFrom = -1;
-        sentTiles = false;
-        sentLines = false;
+        sentTiles = sentLines = false;
         sentHead = null;
         lastHdCheck = Integer.MIN_VALUE / 2;
     }
@@ -393,12 +391,11 @@ public final class RouteFeature implements TourPanel.Actions {
             lastHdCheck = ticks;
             // Also in one's house: its tiles go as the scene's own instance tiles (markerPoint).
             boolean on = pluginOn(List.of(MarkersBridge.PLUGIN_NAME)) != null;
+            hdTexts = on && drawsTexts();
             if (!on && hdTiles) {
-                head(null, null, null);
-                eventBus.post(MarkersBridge.clear());
+                clearHd();
                 sentAhead = null;
-                sentTiles = false;
-                sentLines = false;
+                sentTiles = sentLines = false;
             }
             hdTiles = on;
         }
@@ -432,8 +429,7 @@ public final class RouteFeature implements TourPanel.Actions {
             if (sentTiles) {
                 eventBus.post(MarkersBridge.clear());
             }
-            sentTiles = false;
-            sentLines = false;
+            sentTiles = sentLines = false;
             return;
         }
         tileBorder = config.routeTileBorder();
@@ -478,50 +474,31 @@ public final class RouteFeature implements TourPanel.Actions {
             eventBus.post(MarkersBridge.lines(lines, lineColors, lineArrows, config.routeLineWidth()));
             sentLines = asLines;
         }
+        // The teleports' named tiles first: HD World Markers takes 1000.
         var tiles = new ArrayList<MarkersBridge.Tile>();
-        var taken = new HashSet<Integer>();
         int blocked = blockedFrom(route);
         var steps = route == null ? List.<Step>of() : route.steps;
         for (int index = 0; index < steps.size(); index++) {
             Step step = steps.get(index);
-            boolean cannot = blocked >= 0 && index >= blocked;
-            Color color = cannot ? CANNOT : current();
-            if (step.kind == Kind.WALK) {
-                for (int point : asLines ? new int[0] : step.points) {
-                    if (reach(point, player)) {
-                        taken.add(point);
-                        tiles.add(hdTile(point, fadeIn(point, now), color));
-                    }
-                }
-            } else if (onItsTile(step)) {
-                int at = namedAt(step);
-                var marked = reach(at, player) ? markerPoint(at) : null;
-                if (marked != null) {
-                    tiles.add(new MarkersBridge.Tile(marked, cannot ? CANNOT : jump(),
-                        said(whole(route), step, false)));
-                }
+            int at = namedAt(step);
+            var marked = onItsTile(step) && reach(at, player) ? markerPoint(at) : null;
+            if (marked != null) {
+                tiles.add(new MarkersBridge.Tile(marked, blocked >= 0 && index >= blocked ? CANNOT : jump(),
+                    said(whole(route), step, false)));
             }
         }
-        // Fading tiles last: HD World Markers takes 1000, and the route near the player matters more.
-        for (var entry : asLines ? Map.<Integer, Long>of().entrySet() : fading.entrySet()) {
-            float alpha = fadeAlpha(entry.getValue(), now);
-            int point = entry.getKey();
-            if (alpha > 0.05f && taken.add(point)) {
-                tiles.add(hdTile(point, alpha, current()));
-            }
-        }
-        // The nearer part wins where they cross.
-        for (int i = asLines ? -1 : later.size() - 1; i >= 0; i--) {
-            Color color = legColor(later.get(i).getKey());
-            eachWalked(later.get(i).getValue(), point -> {
-                if (reach(point, player) && taken.add(point)) {
-                    tiles.add(hdTile(point, 1, color));
-                }
-            });
+        if (!asLines) {
+            eachTile(route, player, MARKER_REACH, (point, color, strength) -> tiles.add(hdTile(point, strength, color)));
         }
         tiles.removeIf(Objects::isNull);
         eventBus.post(MarkersBridge.tiles(tiles));
         sentTiles = true;
+    }
+
+    /** Takes everything off HD World Markers. Client thread. */
+    void clearHd() {
+        head(null, null, null);
+        eventBus.post(MarkersBridge.clear());
     }
 
     static boolean reach(int point, int player) {
@@ -538,9 +515,11 @@ public final class RouteFeature implements TourPanel.Actions {
      */
     @Subscribe(priority = -1)
     public void onPluginMessage(PluginMessage message) {
-        if (is(message, "transports") && handedOver != null) {
+        // Read once: a Clear on Swing may come between.
+        var over = handedOver;
+        if (is(message, "transports") && over != null) {
             spJumps = SpBridge.jumps(message);
-            walkShortestPath(spJumps, handedOver);
+            walkShortestPath(spJumps, over);
             invokeLater(() -> showSp(false));
             return;
         }
@@ -581,15 +560,24 @@ public final class RouteFeature implements TourPanel.Actions {
             return;
         }
         followed = List.copyOf(targets);
+        if (tour != null) {
+            // A running custom route goes on; the directions stay kept for after it.
+            return;
+        }
         int asked = pluginAsked.incrementAndGet();
         if (c != null && !targets.isEmpty()) {
             fastest(targets, true, () -> pluginAsked.get() != asked || controller != c, wilderness, best -> {
+                if (tour != null) {
+                    // A custom route started while this was looked for: it goes on.
+                    return;
+                }
+                int to = node(best);
                 // A new place shows its steps on the open map, as one asked for here does.
-                bringUp = c.target() != pack(best);
+                bringUp = c.target() != to;
                 fromPlugin = true;
                 pluginWilderness = wilderness;
                 routeAvoid.clear();
-                c.setTarget(pack(best));
+                c.setTarget(to);
             });
         } else if (c != null && fromPlugin) {
             fromPlugin = false;
@@ -671,7 +659,7 @@ public final class RouteFeature implements TourPanel.Actions {
         if (!leftOut) {
             legs.add(new int[]{at, pack(target)});
         }
-        work.execute(() -> {
+        inBackground(work, () -> {
             var walks = new ArrayList<int[]>();
             for (var leg : legs) {
                 if (asked != spAsked.get()) {
@@ -686,10 +674,29 @@ public final class RouteFeature implements TourPanel.Actions {
                 } catch (RuntimeException e) {
                 }
             }
+            return walks;
+        }, walks -> {
             if (asked == spAsked.get()) {
                 spWalks = walks;
-                invokeLater(this::repaint);
+                repaint();
             }
+        });
+    }
+
+    /**
+     * Runs {@code job} on {@code pool}; its result goes to {@code back} on Swing, null when it threw (logged). False
+     * when the pool takes no more work.
+     */
+    <T> boolean inBackground(ExecutorService pool, Callable<T> job, Consumer<T> back) {
+        return TileCache.execute(pool, () -> {
+            T result = null;
+            try {
+                result = job.call();
+            } catch (Throwable e) {
+                log.warn("A route job failed", e);
+            }
+            var made = result;
+            invokeLater(() -> back.accept(made));
         });
     }
 
@@ -701,7 +708,7 @@ public final class RouteFeature implements TourPanel.Actions {
         return HousePlan.contains(point.getX(), point.getY()) ? -1 : map.snap(point);
     }
 
-    void paintHandedOver(Graphics2D g, Projection p) {
+    void paintHandedOver(Graphics2D g, MapView p) {
         var target = handedOver;
         if (target == null) {
             return;
@@ -753,7 +760,7 @@ public final class RouteFeature implements TourPanel.Actions {
         var name = shortestPathName();
         boolean on = name != null;
         panel.add(label("Route by " + (on ? name : "Shortest Path"), width, Font.BOLD, Color.WHITE));
-        panel.add(label(on ? t("spPlanned", name) : t("spOff"), width, on ? ColorScheme.LIGHT_GRAY_COLOR : NOTE));
+        panel.add(label(on ? t("spPlanned", name) : t("spOff"), width, on ? LIGHT_GRAY_COLOR : NOTE));
         int number = 1;
         for (var j : spJumps) {
             panel.add(label(number++ + ". " + j.name, width, new Color(200, 170, 255)));
@@ -848,42 +855,46 @@ public final class RouteFeature implements TourPanel.Actions {
         if (on == null || !RouteFiles.available()) {
             return;
         }
-        on.execute(() -> {
-            try {
-                var map = CollisionMap.load();
-                var sea = SeaMap.load();
-                Pathfinder pathfinder = new Pathfinder(map, sea);
-                var loadedPorts = Ports.load();
-                invokeLater(() -> {
-                    if (generation != loads.get() || searches == null) {
-                        return; // stopped (maybe restarted) while loading
-                    }
-                    ports = loadedPorts;
-                    yourHouse.setCollision(map);
-                    source = new RouteSource(map, sea, pathfinder.shortcutPassages, pathfinder::pocket);
-                    for (var screen : screens) {
-                        // Entering a dungeon fits the map to its walkable area.
-                        screen.view.areaBounds = (p -> WalkableArea.bounds(map, p.getX(), p.getY(), p.getPlane(),
-                            AREA_LIMIT));
-                        // A click on ground drawn on another floor than it is walked on asks for that floor.
-                        screen.view.ground = p -> map.walkable(p.getX(), p.getY(), p.getPlane());
-                    }
-                    walker = pathfinder;
-                    // A new map version's tables: the route on the way is planned again with them, not dropped.
-                    var before = controller;
-                    if (before != null) {
-                        before.cancelRunning();
-                    }
-                    controller = new RouteController(searches, SwingUtilities::invokeLater, pathfinder,
-                        target -> withBank(request(start, target, false), start, target, leftOut(),
-                            fromPlugin ? pluginWilderness : null),
-                        c -> changed(), System::currentTimeMillis);
-                    if (before != null && before.target() >= 0) {
-                        controller.setTarget(before.target());
-                    }
-                });
-            } catch (Exception e) {
-                log.warn("Could not load the route data", e);
+        inBackground(on, () -> {
+            var pathfinder = new Pathfinder(CollisionMap.load(), SeaMap.load());
+            var made = new RouteSource(pathfinder.map, pathfinder.sea, pathfinder.shortcutPassages, pathfinder::pocket);
+            if (generation == loads.get()) {
+                // A request snaps every place's spot to open ground (a tenth of a second the first time): once here,
+                // thrown away, so the first route asked for on Swing finds them done. From where the player is (the
+                // walk out of the Wilderness kept too), else from any spot on land.
+                int at = max(start, 0);
+                try {
+                    request(made, at, at, false, false, List.of(), state, null);
+                } catch (RuntimeException e) {
+                    log.warn("Could not prepare the route data", e);
+                }
+            }
+            return Map.entry(pathfinder, made);
+        }, loaded -> {
+            if (loaded == null || generation != loads.get() || searches == null) {
+                return; // failed, or stopped (maybe restarted) while loading
+            }
+            var pathfinder = loaded.getKey();
+            var map = pathfinder.map;
+            yourHouse.setCollision(map);
+            source = loaded.getValue();
+            for (var screen : screens) {
+                // Entering a dungeon fits the map to its walkable area.
+                screen.view.areaBounds = (p -> WalkableArea.bounds(map, p.getX(), p.getY(), p.getPlane(),
+                    AREA_LIMIT));
+                // A click on ground drawn on another floor than it is walked on asks for that floor.
+                screen.view.ground = p -> map.walkable(p.getX(), p.getY(), p.getPlane());
+            }
+            walker = pathfinder;
+            // A new map version's tables: the route on the way is planned again with them, not dropped.
+            var before = controller;
+            Optional.ofNullable(before).ifPresent(RouteController::cancelRunning);
+            controller = new RouteController(searches, SwingUtilities::invokeLater, pathfinder,
+                target -> withBank(request(start, target, false), start, target, leftOut(),
+                    fromPlugin ? pluginWilderness : null),
+                c -> changed(), System::currentTimeMillis);
+            if (before != null && before.target() >= 0) {
+                controller.setTarget(before.target());
             }
         });
     }
@@ -898,28 +909,28 @@ public final class RouteFeature implements TourPanel.Actions {
         eventBus.unregister(yourHouse);
         eventBus.unregister(fairyRingLog);
         overlays.forEach(overlayManager::remove);
-        fadeTimer.stop();
-        itemReroute.stop();
-        if (hdTiles) {
-            hdTiles = false;
-            clientThread.invokeLater(() -> {
-                head(null, null, null);
-                eventBus.post(MarkersBridge.clear());
-            });
-        }
+        // First: the clear fades the route out and may send it to HD World Markers, both taken back below.
         var running = controller;
         if (running != null) {
             running.clear();
         }
         // Work still on its threads finds it is not wanted.
         controller = null;
+        fadeTimer.stop();
+        itemReroute.stop();
+        fading.clear();
+        appearing.clear();
+        gone.clear();
+        if (hdTiles) {
+            hdTiles = false;
+            clientThread.invokeLater(this::clearHd);
+        }
         for (var pool : new ExecutorService[]{searches, background}) {
             if (pool != null) {
                 pool.shutdownNow();
             }
         }
-        searches = null;
-        background = null;
+        searches = background = null;
         fastestAsked.incrementAndGet();
         spAsked.incrementAndGet();
         // The plugin keeps this until its next start: not the collision map, the planner or the screens.
@@ -931,6 +942,17 @@ public final class RouteFeature implements TourPanel.Actions {
             // Else Shortest Path keeps drawing it, with no Clear path here after a restart.
             clientThread.invokeLater(() -> eventBus.post(clear()));
         }
+        // Nor the sidebar's panel (the big map's screen and its places hang on it), the item pictures, other plugins'
+        // marks, the custom route or this account's house pictures and plan: none of it stays while the plugin is off.
+        sidebar = section -> { };
+        sidebarFocus = point -> { };
+        sidebarTours = () -> { };
+        sidebarNow = null;
+        itemNames = null;
+        named = null;
+        marks = List.of();
+        tour = null;
+        clientThread.invokeLater(yourHouse::forget);
     }
 
     // ---- client thread ----
@@ -954,24 +976,14 @@ public final class RouteFeature implements TourPanel.Actions {
     void tick(WorldPoint location) {
         ticks++;
         var found = new ArrayList<WorldMapPoint>();
-        for (Plugin p : pluginManager.getPlugins()) {
-            if (p instanceof ClueScrollPlugin && pluginManager.isPluginEnabled(p)) {
-                var plugin = (ClueScrollPlugin) p;
-                var clue = plugin.getClue();
-                var at = clue instanceof LocationsClueScroll ? ((LocationsClueScroll) clue).getLocations(plugin)
-                    : clue instanceof LocationClueScroll ? ((LocationClueScroll) clue).getLocations(plugin) : null;
-                for (var point : at == null ? new WorldPoint[0] : at) {
-                    if (point != null) {
-                        found.add(WorldMapPoint.builder().worldPoint(point).image(plugin.getClueScrollImage())
-                            .tooltip(t("rfClue")).snapToEdge(true).build());
-                    }
-                }
-            }
-        }
-        // Other plugins' icons (Slayer task spots, Quest Helper): the list is not public, removeIf only reads it here.
-        // RuneLite's own (World Map, Clue Scroll, Party) are left out.
+        // Other plugins' icons (Slayer task spots, Quest Helper) and the Clue Scroll plugin's spot for the clue now:
+        // the list is not public, removeIf only reads it here. RuneLite's own World Map and Party icons are left out.
         worldMapPoints.removeIf(point -> {
-            if (!CORE_POINTS.contains(point.getClass().getName())) {
+            if (CLUE_POINT.equals(point.getClass().getName())) {
+                // The clue's picture as the game's map shows it, with a tooltip saying what it is.
+                found.add(WorldMapPoint.builder().worldPoint(point.getWorldPoint()).image(point.getImage())
+                    .imagePoint(point.getImagePoint()).tooltip(t("rfClue")).snapToEdge(true).build());
+            } else if (!CORE_POINTS.contains(point.getClass().getName())) {
                 found.add(point);
             }
             return false;
@@ -1021,8 +1033,10 @@ public final class RouteFeature implements TourPanel.Actions {
             yourHouse.firstReading = RouteHouse.NONE;
             state = capture();
         }
+        // On a ship not one's own (a charter come in at a port): from the dock beside it, where one steps off.
         int from = location == null ? -2 : house.inside() ? yourHouse.inHouse()
-            : view != null && !view.isTopLevel() ? seaAt(location.getX(), location.getY()) : node;
+            : view == null || view.isTopLevel() ? node : client.getVarbitValue(SAILING_PLAYER_IS_ON_PLAYER_BOAT) == 1
+            ? seaAt(location.getX(), location.getY()) : Tiles.pack(location.getX(), location.getY(), 0);
         start = from;
         // Not in other instances (their tiles are copies); in one's own house its plan tells where one is, in an instance
         // copying a place on the map (instance_copies.tsv) that place.
@@ -1106,7 +1120,7 @@ public final class RouteFeature implements TourPanel.Actions {
         long now = currentTimeMillis();
         // Tiles fade all the while a route is walked: a map paints again only round the dots it shows, not whole.
         for (var screen : screens) {
-            Rectangle dots = screen.view.isShowing() ? fadingDots(screen.view.projection(), fading.keySet()) : null;
+            Rectangle dots = screen.view.isShowing() ? fadingDots(screen.view, fading.keySet()) : null;
             if (dots != null) {
                 screen.view.repaint(dots);
             }
@@ -1120,7 +1134,7 @@ public final class RouteFeature implements TourPanel.Actions {
     }
 
     /** Where a map shows these passed tiles' dots (appearing tiles fade in the game only), or null. */
-    static Rectangle fadingDots(Projection p, Set<Integer> tiles) {
+    static Rectangle fadingDots(MapView p, Set<Integer> tiles) {
         int r = (int) ceil(dotRadius(p)) + 2;
         Rectangle dots = null;
         for (int point : tiles) {
@@ -1132,18 +1146,13 @@ public final class RouteFeature implements TourPanel.Actions {
         return dots;
     }
 
-    static double dotRadius(Projection p) {
+    static double dotRadius(MapView p) {
         return max(1.5, pow(2, p.zoom()) * 0.35);
     }
 
     static void eachWalked(Route route, IntConsumer tile) {
-        for (Step step : route.steps) {
-            if (step.kind == Kind.WALK) {
-                for (int point : step.points) {
-                    tile.accept(point);
-                }
-            }
-        }
+        route.steps.stream().filter(step -> !step.isJump()).flatMapToInt(step -> IntStream.of(tilesOf(step)))
+            .forEach(tile);
     }
 
     static Set<Integer> walked(Route route) {
@@ -1162,13 +1171,10 @@ public final class RouteFeature implements TourPanel.Actions {
 
     void fadeOut(Set<Integer> tiles) {
         long t = currentTimeMillis();
-        if (tiles.isEmpty() || tiles.size() > 1000) {
-            return;
+        if (!tiles.isEmpty() && tiles.size() <= 1000) {
+            tiles.forEach(point -> fading.putIfAbsent(point, t));
+            fadeTimer.start();
         }
-        for (int point : tiles) {
-            fading.putIfAbsent(point, t);
-        }
-        fadeTimer.start();
     }
 
     Route aheadOf, aheadWalkedOf;
@@ -1271,7 +1277,7 @@ public final class RouteFeature implements TourPanel.Actions {
         var boats = new LinkedHashMap<Integer, Integer>();
         // The five boats' varbits lie 38 apart, each boat's teleport focus (0 none, 1, 2 greater) 10 after its port.
         for (int port = SAILING_BOAT_1_PORT; port <= SAILING_BOAT_5_PORT; port += 38) {
-            Integer tile = ports.get(client.getVarbitValue(port));
+            Integer tile = RouteFiles.tables().ports.get(client.getVarbitValue(port));
             if (tile != null) {
                 boats.merge(tile, client.getVarbitValue(port + 10), Math::max);
             }
@@ -1298,9 +1304,10 @@ public final class RouteFeature implements TourPanel.Actions {
         var carried = new HashMap<Integer, Long>();
         count(client.getItemContainer(InventoryID.INV), carried);
         count(client.getItemContainer(InventoryID.WORN), carried);
-        if (bankShut) {
+        if (bankShut || depositBox) {
             // Banked or taken as the bank closed: the game no longer sends the bank, so it is what left one's hands
-            // (the rune pouch put away just before the close, its runes then in the bank).
+            // (the rune pouch put away just before the close, its runes then in the bank). At a deposit box each
+            // deposit, as it is made.
             var bank = new HashMap<>(bankItems);
             lastCarried.forEach((id, n) -> bank.merge(id, n, Long::sum));
             carried.forEach((id, n) -> bank.merge(id, -n, Long::sum));
@@ -1314,7 +1321,7 @@ public final class RouteFeature implements TourPanel.Actions {
         var used = routeItemAmounts;
         boolean changed = shown != null && (used == null ? !state.items.sameAs(before.items)
             : !state.items.sameFor(before.items, used));
-        if (changed || tipShown && !state.items.sameAs(before.items)) {
+        if (changed) {
             // Not while the bank is open: once it is closed, with what was taken out.
             if (atBank) {
                 changedAtBank = true;
@@ -1332,10 +1339,13 @@ public final class RouteFeature implements TourPanel.Actions {
 
     /** Whether the bank or a deposit box is open, and what a route may use changed meanwhile. Client thread. */
     boolean atBank, changedAtBank;
+    /** A deposit box is open: each deposit goes to the bank, which the game does not send. Client thread. */
+    boolean depositBox;
 
     @Subscribe
     public void onWidgetLoaded(WidgetLoaded event) {
         atBank |= bank(event.getGroupId());
+        depositBox |= event.getGroupId() == InterfaceID.BANK_DEPOSITBOX;
     }
 
     static boolean bank(int group) {
@@ -1346,6 +1356,7 @@ public final class RouteFeature implements TourPanel.Actions {
     public void onWidgetClosed(WidgetClosed event) {
         if (bank(event.getGroupId())) {
             atBank = false;
+            depositBox = false;
             bankShut = true;
             if (changedAtBank) {
                 changedAtBank = false;
@@ -1393,10 +1404,10 @@ public final class RouteFeature implements TourPanel.Actions {
     /** Whether everything the route's bank step names ("Rune pouch, 3 × Air rune") is carried; false when it cannot tell. */
     static boolean allTaken(Route route, Map<String, Long> carried, boolean pouch) {
         Step bank = route == null ? null : route.first(BANK);
-        if (bank == null || !bank.name.startsWith("Bank: ")) {
+        if (bank == null || bank.said.taken == null) {
             return false;
         }
-        for (String item : bank.name.substring("Bank: ".length()).split(", ")) {
+        for (String item : bank.said.taken) {
             var m = AMOUNT.matcher(item);
             if (!m.matches()) {
                 return false;
@@ -1426,8 +1437,6 @@ public final class RouteFeature implements TourPanel.Actions {
     /** Milliseconds what is carried must stay the same before the route is looked for again. */
     static final int ITEM_REROUTE_MS = 600;
     final Timer itemReroute = new Timer(ITEM_REROUTE_MS, e -> settingsChanged());
-    /** Whether a tip is shown now (set on the Swing thread, read on the client thread). */
-    volatile boolean tipShown;
 
     /** None for a container not there. */
     static void count(ItemContainer container, Map<Integer, Long> into) {
@@ -1444,14 +1453,17 @@ public final class RouteFeature implements TourPanel.Actions {
         if (event.getGameState() == GameState.LOGGED_IN) {
             pandemonium = null;
             warnBoth(false);
+            // The game starts the minimap zoom afresh in a new session or world: the saved one goes back on.
+            hdMinimap.zoomBack = false;
         } else if (event.getGameState() == GameState.LOGIN_SCREEN) {
             start = -2;
             state = PlayerState.UNKNOWN;
-            atBank = false;
-            changedAtBank = false;
+            atBank = changedAtBank = false;
+            depositBox = false;
             // A bank open at logout closes then: none of it carries over to the next account.
             bankShut = closedBank = false;
             lastCarried = Map.of();
+            returns.reset();
         }
     }
 
@@ -1477,7 +1489,7 @@ public final class RouteFeature implements TourPanel.Actions {
             invokeLater(() -> {
                 var c = controller;
                 stopTour();
-                if (c != null && c.target() >= 0) {
+                if (routing()) {
                     c.clear();
                 }
                 if (handedOver != null && !spPlanner()) {
@@ -1502,10 +1514,13 @@ public final class RouteFeature implements TourPanel.Actions {
     }
 
     void settingsChanged() {
+        Optional.ofNullable(controller).ifPresent(RouteController::settingsChanged);
+    }
+
+    /** Whether our planner has a target now. */
+    boolean routing() {
         var c = controller;
-        if (c != null) {
-            c.settingsChanged();
-        }
+        return c != null && c.target() >= 0;
     }
 
     public void toast(String text) {
@@ -1536,7 +1551,12 @@ public final class RouteFeature implements TourPanel.Actions {
      */
     RouteRequest request(int begin, int target, boolean anything, boolean everyItem, List<String> leftOut,
         PlayerState player, Boolean wilderness) {
-        var from = source;
+        return request(source, begin, target, anything, everyItem, leftOut, player, wilderness);
+    }
+
+    /** The same with {@code from}'s ways: also a map version's before it is taken (its snaps worked out). */
+    RouteRequest request(RouteSource from, int begin, int target, boolean anything, boolean everyItem,
+        List<String> leftOut, PlayerState player, Boolean wilderness) {
         var on = screens;
         if (from == null || begin < -1 || on.length == 0) {
             return null;
@@ -1548,7 +1568,7 @@ public final class RouteFeature implements TourPanel.Actions {
                 : new Saving(config.routeSaveTeleport(), config.routeSaveShortcut(),
                     config.routeSaveTransport(), config.routeSaveCanoe(), config.routeSaveCarpet(), config.routeSaveShip()),
             anything, wilderness != null ? wilderness : config.routeAvoidWilderness(), config.routeSailToLand());
-        nameItems(view.pois());
+        nameItems();
         from.itemNames = itemNames;
         from.plantedTrees = planted.grown();
         return from.request(begin, target, view.pois(), view.unlocks(), player, options, RouteRequest.DEFAULT_NODE_LIMIT);
@@ -1612,12 +1632,11 @@ public final class RouteFeature implements TourPanel.Actions {
 
     /** The bank as seen (item id to amount), kept for this account when what routes may need in it changed. Client thread. */
     void rememberBank(Map<Integer, Long> bank) {
-        var on = screens;
-        if (routeItemIds == null && on.length > 0 && !on[0].view.pois().isEmpty()) {
-            nameItems(on[0].view.pois());
+        if (routeItemIds == null) {
+            nameItems();
         }
         var wanted = routeItemIds;
-        // Before the places are read what routes need is not known: the bank kept stays.
+        // Before a map version's tables are read what routes need is not known: the bank kept stays.
         if (wanted == null) {
             return;
         }
@@ -1634,42 +1653,33 @@ public final class RouteFeature implements TourPanel.Actions {
 
     /** The game's item names, so a step says what it lacks by name; set by the plugin. */
     volatile ItemNames itemNames;
-    /** The place list whose items were named last. */
-    volatile List<Poi> named;
+    /** The tables whose items were named last. */
+    volatile RouteTables named;
 
     /**
-     * Asks the game once per place list for the names of the items its teleports and transports need, and the gates',
-     * shortcuts' and own ways'; they are also what is kept of the bank.
+     * Asks the game once per map version for the names of the items its teleports, transports, gates, shortcuts and own
+     * ways need; they are also what is kept of the bank.
      */
-    void nameItems(List<Poi> pois) {
+    void nameItems() {
         var names = itemNames;
-        if (names == null || pois == named) {
+        var tables = RouteFiles.tables();
+        if (names == null || tables == named || tables.places.isEmpty()) {
             return;
         }
-        named = pois;
-        var most = new HashMap<Integer, Long>();
+        named = tables;
         var byStep = new HashMap<String, Set<Integer>>();
-        for (var poi : Poi.flatten(pois)) {
-            poi.members().forEach(member -> {
-                Requirements.itemAmounts(member.needs.items, most);
-                // A spell's runes are no item to use: outlined in the bank only.
-                byStep.computeIfAbsent((member.group != null && member.group.endsWith("Spellbook") ? SPELL : "")
-                    + member.name, k -> new HashSet<>()).addAll(Requirements.itemIds(member.needs.items));
-            });
-            poi.links().forEach(link -> {
-                Requirements.itemAmounts(link.needs.items, most);
-                byStep.computeIfAbsent(describe(poi, link), k -> new HashSet<>())
-                    .addAll(Requirements.itemIds(link.needs.items + "&&" + poi.needs.items));
-            });
-        }
+        tables.places.values().forEach(jumps -> jumps.stream().filter(jump -> !jump.house).forEach(jump ->
+            // A spell's runes are no item to use: outlined in the bank only.
+            byStep.computeIfAbsent((jump.group != null && jump.group.endsWith("Spellbook") ? SPELL : "") + jump.name,
+                k -> new HashSet<>()).addAll(Requirements.itemIds(jump.need.items + "&&" + jump.poiNeed.items))));
         ownItems(byStep);
         byStep.values().removeIf(Set::isEmpty);
         stepItems = byStep;
+        var most = new HashMap<Integer, Long>();
         fixedNeeds().forEach(needs -> Requirements.itemAmounts(needs.items, most));
-        var ids = new HashSet<>(most.keySet());
         routeItemAmounts = unmodifiableMap(most);
-        routeItemIds = unmodifiableSet(ids);
-        names.resolve(ids, () -> { });
+        routeItemIds = unmodifiableSet(new HashSet<>(most.keySet()));
+        names.resolve(routeItemIds, () -> { });
     }
 
     /**
@@ -1679,7 +1689,7 @@ public final class RouteFeature implements TourPanel.Actions {
     static void ownItems(Map<String, Set<Integer>> byStep) {
         var house = new HashSet<Integer>();
         var boat = new HashSet<Integer>();
-        for (var way : OWN.get()) {
+        for (var way : RouteFiles.tables().own) {
             if (way[0].equals("house") && way[2].isEmpty() || way[0].equals("sailing cape")) {
                 (way[0].equals("house") ? house : boat).addAll(Requirements.itemIds(way[3]));
             } else if (way[0].equals("boat teleport")) {
@@ -1734,43 +1744,40 @@ public final class RouteFeature implements TourPanel.Actions {
         }
         var leftOut = leftOut();
         toast("Finding the fastest…");
-        try {
-            pool.execute(() -> {
-                var candidates = candidates(nearest, nearest.stream().mapToInt(this::node).toArray(),
-                    request(from, node(nearest.get(0)), false, false, leftOut, state, wilderness));
-                var best = nearest.get(0);
-                int bestCost = Integer.MAX_VALUE;
-                for (var p : candidates) {
-                    if (stale.getAsBoolean()) {
-                        return;
-                    }
-                    int to = node(p);
-                    // Weighed as the route there will be: past a bank too.
-                    var request = withBank(request(from, to, false, false, leftOut, state, wilderness), from, to,
-                        leftOut, wilderness);
-                    Route route;
-                    try {
-                        // Nearest as the crow flies first; a place that cannot beat the best so far is given up on
-                        // early. Chosen by the same cost (time, teleports a little heavier) the route is planned by:
-                        // by time, a place reached by teleport could be given up on although quicker.
-                        route = request == null ? null : find(pathfinder, request, stale, bestCost);
-                    } catch (Throwable e) {
-                        log.warn("Could not plan to {}", p, e);
-                        continue;
-                    }
-                    if (route != null && route.outcome == FOUND && route.cost < bestCost) {
-                        best = p;
-                        bestCost = route.cost;
-                    }
+        if (!inBackground(pool, () -> {
+            var candidates = candidates(nearest, nearest.stream().mapToInt(this::node).toArray(),
+                request(from, node(nearest.get(0)), false, false, leftOut, state, wilderness));
+            var best = nearest.get(0);
+            int bestCost = Integer.MAX_VALUE;
+            for (var p : candidates) {
+                if (stale.getAsBoolean()) {
+                    return null;
                 }
-                var found = best;
-                invokeLater(() -> {
-                    if (!stale.getAsBoolean()) {
-                        chosen.accept(found);
-                    }
-                });
-            });
-        } catch (RejectedExecutionException e) {
+                int to = node(p);
+                // Weighed as the route there will be: past a bank too.
+                var request = withBank(request(from, to, false, false, leftOut, state, wilderness), from, to,
+                    leftOut, wilderness);
+                Route route;
+                try {
+                    // Nearest as the crow flies first; a place that cannot beat the best so far is given up on
+                    // early. Chosen by the same cost (time, teleports a little heavier) the route is planned by:
+                    // by time, a place reached by teleport could be given up on although quicker.
+                    route = request == null ? null : find(pathfinder, request, stale, bestCost);
+                } catch (Throwable e) {
+                    log.warn("Could not plan to {}", p, e);
+                    continue;
+                }
+                if (route != null && route.outcome == FOUND && route.cost < bestCost) {
+                    best = p;
+                    bestCost = route.cost;
+                }
+            }
+            return best;
+        }, found -> {
+            if (found != null && !stale.getAsBoolean()) {
+                chosen.accept(found);
+            }
+        })) {
             chosen.accept(nearest.get(0));
         }
     }
@@ -1813,8 +1820,9 @@ public final class RouteFeature implements TourPanel.Actions {
      */
     boolean atSea(WorldPoint point) {
         int at = pack(point);
+        var on = screens;
         return point.getPlane() == 0 && (Arrays.stream(seaSpots).anyMatch(spot -> distance(spot, at) <= 2)
-            || screens.length > 0 && screens[0].view.pois().stream()
+            || on.length > 0 && on[0].view.pois().stream()
             .anyMatch(poi -> poi.atSea() && poi.location.getPlane() == 0 && poi.location.distanceTo2D(point) <= 2));
     }
 
@@ -1834,7 +1842,7 @@ public final class RouteFeature implements TourPanel.Actions {
         item(popup, 0, theirs ? t("rfPathSp") : c == null ? t("rfPathLoading") : "Path to here",
             () -> routeTo(point)).setEnabled(theirs || c != null);
         int at = 1;
-        if (handedOver != null || c != null && c.target() >= 0) {
+        if (handedOver != null || routing()) {
             item(popup, at++, tour != null ? "Stop custom route" : "Clear path", this::clearRoute);
         }
         popup.insert(new JPopupMenu.Separator(), at);
@@ -1948,7 +1956,7 @@ public final class RouteFeature implements TourPanel.Actions {
                 return "Near " + place;
             }
         }
-        return "A spot on the map";
+        return t("rfSpot");
     }
 
     public void save(List<Tour> tours, String editing) {
@@ -1974,7 +1982,7 @@ public final class RouteFeature implements TourPanel.Actions {
         running.avoid = new ArrayList<>(chosen.avoid);
         tour = running;
         var at = resolve(running.tour.stops, nearFrom(start));
-        running.points = at.stream().mapToInt(p -> p == null ? -1 : pack(p)).toArray();
+        running.points = at.stream().mapToInt(p -> p == null ? -1 : node(p)).toArray();
         running.legs = new Route[at.size()];
         goToStop(start);
         planLegs(running);
@@ -1990,20 +1998,14 @@ public final class RouteFeature implements TourPanel.Actions {
         }
         int plan = running.plan;
         BooleanSupplier stale = () -> tour != running || running.plan != plan || background == null;
-        work.execute(() -> {
+        inBackground(work, () -> {
             for (int i = 1; i < running.points.length; i++) {
                 if (stale.getAsBoolean()) {
-                    return;
+                    return null;
                 }
                 int from = running.points[i - 1], to = running.points[i];
                 var request = from < 0 || to < 0 ? null : request(from, to, false);
-                Route leg;
-                try {
-                    leg = request == null ? null : pf.find(request, stale);
-                } catch (Throwable e) {
-                    log.warn("Could not plan a part of the custom route", e);
-                    return;
-                }
+                Route leg = request == null ? null : pf.find(request, stale);
                 if (leg != null && leg.outcome != CANCELLED) {
                     int at = i;
                     invokeLater(() -> {
@@ -2017,7 +2019,8 @@ public final class RouteFeature implements TourPanel.Actions {
                     });
                 }
             }
-        });
+            return null;
+        }, none -> { });
     }
 
     TourPanel.Actions sidebarTours(Runnable refresh) {
@@ -2061,9 +2064,7 @@ public final class RouteFeature implements TourPanel.Actions {
     public void clearRoute() {
         var c = controller;
         stopTour();
-        if (c != null) {
-            c.clear();
-        }
+        Optional.ofNullable(c).ifPresent(RouteController::clear);
         if (handedOver != null) {
             handOverClear();
         }
@@ -2089,6 +2090,8 @@ public final class RouteFeature implements TourPanel.Actions {
             fadeOut(walkedAhead(ahead));
             clearRoute();
             toast("\"" + running.tour.name + "\" done");
+            // Another plugin's directions kept while it ran are followed now.
+            followAgain();
             return;
         }
         goToStop(at);
@@ -2107,8 +2110,7 @@ public final class RouteFeature implements TourPanel.Actions {
             return;
         }
         int planned = running.index < running.points.length ? running.points[running.index] : -1;
-        var to = planned >= 0 ? worldPoint(planned)
-            : resolve(running.tour.stops.get(running.index), nearFrom(from));
+        var to = planned >= 0 ? worldPoint(planned) : resolve(running.tour.stops.get(running.index), nearFrom(from));
         if (to == null) {
             // A kind with no place yet (icons not loaded): skipped. A loop of only such stops ends.
             if (++running.skipped > running.tour.stops.size()) {
@@ -2119,7 +2121,8 @@ public final class RouteFeature implements TourPanel.Actions {
             return;
         }
         running.skipped = 0;
-        running.target = pack(to);
+        // The stop's place as planned (a spot at sea is its sea block, whose centre may lie off the spot).
+        running.target = planned >= 0 ? planned : node(to);
         if (toSp(to)) {
             return;
         }
@@ -2160,7 +2163,7 @@ public final class RouteFeature implements TourPanel.Actions {
             Font.BOLD, legColor(running.index)));
         for (int i = 0; i < stops.size(); i++) {
             header.add(label((i + 1) + ". " + stops.get(i).name, width, i == running.index ? Font.BOLD : Font.PLAIN,
-                i < running.index ? ColorScheme.MEDIUM_GRAY_COLOR : legColor(i)));
+                i < running.index ? MEDIUM_GRAY_COLOR : legColor(i)));
         }
         JPanel buttons = panel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         buttons.add(button(running.index + 1 < stops.size() || stops.size() > 1 && loops(running) ? "Next stop" : "Finish",
@@ -2194,56 +2197,48 @@ public final class RouteFeature implements TourPanel.Actions {
         var leftOut = new ArrayList<String>(chosen.avoid);
         toast(t(everything ? "orderingAll" : "ordering", stops.size()));
         BooleanSupplier cancelled = () -> background == null || orders.get() != order;
-        try {
-            work.execute(() -> {
-                List<Integer> sorted = null;
-                try {
-                    int n = points.size();
-                    // Each trip's cost with a home or minigame teleport (cast once in the route, then its cooldown),
-                    // and without: the order takes such a teleport on one trip at most.
-                    long[][] once = new long[n][n], cost = new long[n][n];
-                    // The same ways from any spot on land (the stops and the player are tiles): asked for once.
-                    var ways = request(0, 0, everything, false, leftOut);
-                    var without = new ArrayList<String>(leftOut);
-                    without.add(ONCE_ONLY);
-                    var plainWays = request(0, 0, everything, false, without);
-                    // Stop by stop: the searches to one stop share their heuristic, and one that tried everything tells
-                    // where else that stop is out of reach. None back to the player: an order never returns there.
-                    for (int b = 1; b < n && !cancelled.getAsBoolean(); b++) {
-                        var outOfReach = new ArrayList<Route>();
-                        var plainOutOfReach = new ArrayList<Route>();
-                        for (int a = 0; a < n; a++) {
-                            Route trip = a == b ? null : between(pf, ways, points.get(a), points.get(b), outOfReach, cancelled);
-                            once[a][b] = a == b ? 0 : tripCost(trip);
-                            // Without the teleport only where the trip took one.
-                            cost[a][b] = trip == null || trip.steps.stream().noneMatch(RouteSource::onceOnly) ? once[a][b]
-                                : tripCost(between(pf, plainWays, points.get(a), points.get(b), plainOutOfReach, cancelled));
-                        }
-                    }
-                    var locked = new boolean[stops.size()];
-                    for (int i = 0; i < locked.length; i++) {
-                        locked[i] = stops.get(i).locked;
-                    }
-                    sorted = cancelled.getAsBoolean() ? null : Tour.fastestOrder(cost, once, locked);
-                } catch (Throwable e) {
-                    log.warn("Could not work out the fastest order", e);
-                } finally {
-                    var result = sorted;
-                    invokeLater(() -> {
-                        try {
-                            if (result != null && orders.get() == order) {
-                                applyOrder(name, stops, result);
-                            } else if (orders.get() != order) {
-                                // Another panel's order or a cancel: said, not dropped without a word.
-                                toast(t("orderStopped", name));
-                            }
-                        } finally {
-                            done.run();
-                        }
-                    });
+        if (!inBackground(work, () -> {
+            int n = points.size();
+            // Each trip's cost with a home or minigame teleport (cast once in the route, then its cooldown),
+            // and without: the order takes such a teleport on one trip at most.
+            long[][] once = new long[n][n], cost = new long[n][n];
+            // The same ways from any spot on land (the stops and the player are tiles): asked for once.
+            var ways = request(0, 0, everything, false, leftOut);
+            var without = new ArrayList<String>(leftOut);
+            without.add(ONCE_ONLY);
+            var plainWays = request(0, 0, everything, false, without);
+            // Stop by stop: the searches to one stop share their heuristic, and one that tried everything tells
+            // where else that stop is out of reach. None back to the player: an order never returns there.
+            for (int b = 1; b < n && !cancelled.getAsBoolean(); b++) {
+                var outOfReach = new ArrayList<Route>();
+                var plainOutOfReach = new ArrayList<Route>();
+                for (int a = 0; a < n; a++) {
+                    // From a stop with no place no trip is known either: free only from the player.
+                    Route trip = a == b || a > 0 && points.get(a) == null ? null
+                        : between(pf, ways, points.get(a), points.get(b), outOfReach, cancelled);
+                    once[a][b] = a == b ? 0 : tripCost(trip);
+                    // Without the teleport only where the trip took one.
+                    cost[a][b] = trip == null || trip.steps.stream().noneMatch(RouteSource::onceOnly) ? once[a][b]
+                        : tripCost(between(pf, plainWays, points.get(a), points.get(b), plainOutOfReach, cancelled));
                 }
-            });
-        } catch (RejectedExecutionException e) {
+            }
+            var locked = new boolean[stops.size()];
+            for (int i = 0; i < locked.length; i++) {
+                locked[i] = stops.get(i).locked;
+            }
+            return cancelled.getAsBoolean() ? null : Tour.fastestOrder(cost, once, locked);
+        }, result -> {
+            try {
+                if (result != null && orders.get() == order) {
+                    applyOrder(name, stops, result);
+                } else if (orders.get() != order) {
+                    // Another panel's order or a cancel: said, not dropped without a word.
+                    toast(t("orderStopped", name));
+                }
+            } finally {
+                done.run();
+            }
+        })) {
             done.run();
         }
     }
@@ -2270,7 +2265,7 @@ public final class RouteFeature implements TourPanel.Actions {
             // Its Loop and left-out ways stay.
             all.set(i, new Tour(name, sorted, now.loop, now.avoid));
             // The route edited now stays so, also when another was chosen meanwhile.
-            saveTours(all, editingName());
+            save(all, editingName());
             return;
         }
         toast(t("orderLost", name));
@@ -2349,35 +2344,29 @@ public final class RouteFeature implements TourPanel.Actions {
             return;
         }
         explaining = true;
-        if (!TileCache.execute(pool, () -> lookUp(pathfinder, request, whyAsked, asked, "the way anyone could go",
-            found -> {
-                why = found;
-                explaining = false;
-                changed();
-            }))) {
+        if (!lookUp(pool, pathfinder, () -> request, whyAsked, asked, found -> {
+            why = found;
+            explaining = false;
+            changed();
+        })) {
             explaining = false;
         }
     }
 
     /**
-     * Extras thread: the route for {@code request} (null when none, or the search failed) goes to {@code found} on
-     * Swing while {@code asked} is the current look of {@code looks}; always hands back, so nothing waits on it.
+     * Swing thread: in the background, the route for {@code request} (null when none, or the search failed) goes to
+     * {@code found} on Swing while {@code asked} is the current look of {@code looks}; false when the pool is shut.
      */
-    void lookUp(Pathfinder pathfinder, RouteRequest request, AtomicInteger looks, int asked, String what,
-        Consumer<Route> found) {
-        Route result = null;
-        try {
-            result = request == null ? null : pathfinder.find(request, () -> looks.get() != asked);
-        } catch (Throwable e) {
-            log.warn("Could not look for {}", what, e);
-        } finally {
-            Route route = result;
-            invokeLater(() -> {
-                if (looks.get() == asked) {
-                    found.accept(route);
-                }
-            });
-        }
+    boolean lookUp(ExecutorService pool, Pathfinder pathfinder, Supplier<RouteRequest> request, AtomicInteger looks,
+        int asked, Consumer<Route> found) {
+        return inBackground(pool, () -> {
+            var made = request.get();
+            return made == null ? null : pathfinder.find(made, () -> looks.get() != asked);
+        }, route -> {
+            if (looks.get() == asked) {
+                found.accept(route);
+            }
+        });
     }
 
     /** A tip is given when bringing items saves at least this many half ticks (15 seconds) ... */
@@ -2405,7 +2394,6 @@ public final class RouteFeature implements TourPanel.Actions {
         int asked = tipAsked.incrementAndGet();
         tipTarget = c.target();
         tip = null;
-        tipShown = false;
         var pool = background;
         Pathfinder pathfinder = walker;
         if (route == null || route.outcome != FOUND || pool == null || pathfinder == null || !config.routeTips()
@@ -2413,12 +2401,11 @@ public final class RouteFeature implements TourPanel.Actions {
             return;
         }
         int from = start, target = c.target();
-        TileCache.execute(pool, () -> lookUp(pathfinder, request(from, target, false, true, leftOut()), tipAsked, asked,
-            "a quicker way with other items", found -> {
+        lookUp(pool, pathfinder, () -> request(from, target, false, true, leftOut()), tipAsked, asked,
+            found -> {
                 Tip made = tip(route, found);
                 tip = made;
-                tipShown = made != null;
-                List<Integer> unnamed = made == null ? List.of() : made.unnamed();
+                List<Integer> unnamed = made == null ? List.of() : made.unnamed;
                 var names = itemNames;
                 if (!unnamed.isEmpty() && names != null) {
                     // Asked of the game only now: once named, the tip is looked for again to say them.
@@ -2432,30 +2419,18 @@ public final class RouteFeature implements TourPanel.Actions {
                     });
                 }
                 changed();
-            }));
+            });
     }
 
     /** What to bring for a quicker way: each thing with the step that needs it, and how much sooner. */
     @RequiredArgsConstructor
     static final class Tip {
-        static final Pattern UNNAMED = Pattern.compile("\\bItem (\\d+)\\b");
-
         /** "3200 × Coins", with the step it is for: "Charter ship: Port Tyras". */
         final List<String[]> bring;
         /** "About 2 minutes sooner". */
         final String sooner;
-
         /** Item ids the game had not named yet ("Item 995"). */
-        List<Integer> unnamed() {
-            var ids = new ArrayList<Integer>();
-            for (var b : bring) {
-                Matcher m = UNNAMED.matcher(b[0]);
-                while (m.find()) {
-                    ids.add(Integer.parseInt(m.group(1)));
-                }
-            }
-            return ids;
-        }
+        final List<Integer> unnamed;
     }
 
     /**
@@ -2470,9 +2445,10 @@ public final class RouteFeature implements TourPanel.Actions {
         if (saved < TIP_MIN_SAVED || saved * 100 < yours.time() * TIP_MIN_PERCENT) {
             return null;
         }
-        var bring = withItems.steps.stream().filter(RouteText::lacks)
-            .map(step -> new String[]{lack(step), describe(step)}).collect(toList());
-        return bring.isEmpty() ? null : new Tip(bring, about((saved + 1) / 2) + " sooner");
+        var lacking = withItems.steps.stream().filter(RouteText::lacks).collect(toList());
+        return lacking.isEmpty() ? null : new Tip(lacking.stream().map(step -> new String[]{step.said.lack,
+            describe(step)}).collect(toList()), about((saved + 1) / 2) + " sooner", lacking.stream()
+            .filter(step -> step.said.unnamed != null).flatMap(step -> step.said.unnamed.stream()).collect(toList()));
     }
 
     /** The steps that need what the player lacks. Null when nothing to say; empty when nothing nameable. */
@@ -2485,7 +2461,7 @@ public final class RouteFeature implements TourPanel.Actions {
             return why.exhausted ? List.of(NO_WAY) : null;
         }
         return why.steps.stream().filter(RouteText::lacks)
-            .map(step -> describe(step) + ": needs " + lack(step)).collect(toList());
+            .map(step -> describe(step) + ": needs " + step.said.lack).collect(toList());
     }
 
     Route effective(RouteController c) {
@@ -2599,8 +2575,7 @@ public final class RouteFeature implements TourPanel.Actions {
         String status = route == null && explaining ? t("explaining") : c.status();
         Route left = ahead;
         int done = route != null && route == aheadOf && left != null ? route.steps.size() - left.steps.size() : 0;
-        var panel = panel(route, c.target(), status, width, focus, this::clearRoute, this, current(),
-            jump(), done);
+        var panel = panel(route, c.target(), status, width, focus, this::clearRoute, this, current(), jump(), done);
         if (roomy && route != null && left != null && !left.steps.isEmpty()) {
             sidebarNow = nowBox(left, width, current(), jump());
             panel.add(sidebarNow, 1);
@@ -2610,14 +2585,13 @@ public final class RouteFeature implements TourPanel.Actions {
             panel.add(tourHeader(running, width), 0);
         }
         if (handedOver != null) {
-            panel.add(label(t("spDashed"), width, ColorScheme.MEDIUM_GRAY_COLOR), 1);
+            panel.add(label(t("spDashed"), width, MEDIUM_GRAY_COLOR), 1);
         }
         var planned = state;
         if (route != null && route.has(Kind.SAIL) && planned != null) {
             // So a wrong dock choice can be told apart from a wrong level.
-            String text = config.routeIgnoreLevels() ? "Planned ignoring levels"
-                : t("rfSailing", planned.sailingLevel);
-            panel.add(label(text, width, ColorScheme.MEDIUM_GRAY_COLOR), 1);
+            String text = config.routeIgnoreLevels() ? t("rfIgnoring") : t("rfSailing", planned.sailingLevel);
+            panel.add(label(text, width, MEDIUM_GRAY_COLOR), 1);
         }
         Tip hint = tip;
         if (hint != null && route != null && route == tipFor) {
@@ -2628,7 +2602,7 @@ public final class RouteFeature implements TourPanel.Actions {
         return panel;
     }
 
-    void paintMap(Graphics2D g, Projection p) {
+    void paintMap(Graphics2D g, MapView p) {
         if (p.map() != null && (p.map().id == BaseMap.SURFACE || p.map().id == BaseMap.FULL)) {
             yourHouse.paintHouse(g, p);
         }
@@ -2640,18 +2614,17 @@ public final class RouteFeature implements TourPanel.Actions {
         for (var leg : laterLegs()) {
             paint(g, p, leg.getValue(), legColor(leg.getKey()), jump());
         }
-        if (route == null && fading.isEmpty()) {
-            return;
-        }
         if (route != null) {
             paint(g, p, route, current(), jump());
         }
         long now = currentTimeMillis();
+        // Passed dots in the leg's colour, as in the game.
+        Color passed = current();
         for (var entry : fading.entrySet()) {
             int point = entry.getKey();
             float alpha = fadeAlpha(entry.getValue(), now);
             if (alpha > 0 && visible(p, point)) {
-                g.setColor(alpha(walk(), alpha * 200));
+                g.setColor(alpha(passed, alpha * 200));
                 g.fill(circle(x(p, point), y(p, point), dotRadius(p)));
             }
         }
@@ -2676,13 +2649,13 @@ public final class RouteFeature implements TourPanel.Actions {
             var point = mark.getWorldPoint();
             var icon = mark.getImage();
             if (icon != null && view.shows(point)) {
-                double x = x(view, pack(point)), y = y(view, pack(point));
-                var spot = mark.isSnapToEdge() ? view.edge(x, y) : new Point2D.Double(x, y);
-                int w = icon.getWidth(), h = icon.getHeight(), left = (int) spot.getX() - w / 2, top = (int) spot.getY() - h / 2;
-                if (mark.getImagePoint() != null) {
-                    left = (int) spot.getX() - mark.getImagePoint().getX();
-                    top = (int) spot.getY() - mark.getImagePoint().getY();
-                }
+                // Drawn over the map, not turned with it: where the turned map shows the spot.
+                var on = view.asTurned(x(view, pack(point)), y(view, pack(point)));
+                var spot = mark.isSnapToEdge() ? view.edge(on.getX(), on.getY()) : on;
+                var anchor = mark.getImagePoint();
+                int w = icon.getWidth(), h = icon.getHeight();
+                int left = (int) spot.getX() - (anchor == null ? w / 2 : anchor.getX());
+                int top = (int) spot.getY() - (anchor == null ? h / 2 : anchor.getY());
                 to = to >= 0 && worldPoint(to).distanceTo(point) <= 2 ? -1 : to;
                 g.drawImage(icon, left, top, null);
                 clicks.add(new RoundRectangle2D.Double(left, top, w, h, 8, 8), () -> view.focus(point),
@@ -2702,9 +2675,9 @@ public final class RouteFeature implements TourPanel.Actions {
         if (at < 0) {
             return;
         }
-        double x = x(view, at);
-        // Its tip just above the route's end dot.
-        double y = y(view, at) - 8 - 12 * DESTINATION_SCALE, angle = PI / 2;
+        // Its tip just above the route's end dot, on the screen where the turned map shows the dot.
+        var dot = view.asTurned(x(view, at), y(view, at));
+        double x = dot.getX(), y = dot.getY() - 8 - 12 * DESTINATION_SCALE, angle = PI / 2;
         if (x < 0 || y < 0 || x > view.getWidth() || y > view.getHeight()) {
             var edge = view.edge(x, y);
             angle = atan2(y - edge.getY(), x - edge.getX());
@@ -2797,7 +2770,9 @@ public final class RouteFeature implements TourPanel.Actions {
             text = said(whole(route), now, house.inside());
         }
         Color color = now != null && lacks(now) ? CANNOT : jump();
-        if (hdTiles) {
+        // On a boat ours: RuneLite places text over a head in the boat's own scene.
+        var boat = player.getWorldView();
+        if (hdTiles && hdTexts && (boat == null || boat.isTopLevel())) {
             // Drawn by HD World Markers, as the tiles' names are.
             headSaid = true;
             head(text, color, player);
@@ -2808,6 +2783,21 @@ public final class RouteFeature implements TourPanel.Actions {
 
     /** Whether this frame's text over the head was sent to HD World Markers. */
     boolean headSaid;
+
+    /** Whether HD World Markers draws the text over the head ({@link #drawsTexts}); else it is ours. */
+    volatile boolean hdTexts;
+
+    /**
+     * Whether the HD World Markers on draws the texts sent to it ({@code texts}): since its 1.4.0, the release that also
+     * brought its Interact highlight settings ({@code interactStyles}), read from its settings as RuneLite lists them. An
+     * older one would leave the text over the head out. Temporary, until players have updated it.
+     */
+    boolean drawsTexts() {
+        return pluginManager.getPlugins().stream().filter(p -> MarkersBridge.PLUGIN_NAME.equals(p.getName())).findFirst()
+            .map(pluginManager::getPluginConfigProxy).map(configManager::getConfigDescriptor)
+            .map(d -> d.getItems().stream().anyMatch(item -> "interactStyles".equals(item.getItem().keyName())))
+            .orElse(false);
+    }
 
     void tag(Graphics2D g, LocalPoint at, String text, Color color, int height) {
         // The font first: the text is centred with it.
@@ -2820,10 +2810,13 @@ public final class RouteFeature implements TourPanel.Actions {
 
     static final int MINIMAP_ALPHA = 150;
 
-    /** Where the player is for the overlays: in one's house its plan's tile. Client thread. */
+    /**
+     * Where the player is for the overlays, as the planner has it: in one's house its plan's tile, in an instance
+     * copying a place that place's, on a boat its sea block. Client thread.
+     */
     int near() {
         int at = start;
-        return house.own() && at >= 0 ? at : pack(client.getLocalPlayer().getWorldLocation());
+        return at >= 0 ? at : pack(client.getLocalPlayer().getWorldLocation());
     }
 
     /** The colour last made: tiles side by side share it, so a frame does not make a Color for every tile. */
@@ -2848,32 +2841,36 @@ public final class RouteFeature implements TourPanel.Actions {
     }
 
     /**
-     * The ground tiles of the overlays within {@code reach} of {@code me}: later parts of a custom route, the route
-     * (fading in), then passed tiles. Asked every frame: far tiles are left out before anything is looked up.
+     * The ground tiles of the overlays and HD World Markers within {@code reach} of {@code me} (anywhere when it is not
+     * known), each once: the route (fading in), then passed tiles still to be seen, then the later parts of a custom
+     * route. Asked every frame: far tiles are left out before anything is looked up.
      */
     void eachTile(Route route, int me, int reach, TileSink sink) {
-        for (var leg : laterLegs()) {
-            Color color = legColor(leg.getKey());
-            eachWalked(leg.getValue(), point -> {
-                if (distance(point, me) <= reach) {
-                    sink.tile(point, color, 1);
-                }
-            });
-        }
-        Color normal = current();
+        var taken = new HashSet<Integer>();
+        IntPredicate near = point -> (me < 0 || distance(point, me) <= reach) && taken.add(point);
         long now = currentTimeMillis();
-        eachWalk(route, normal, (points, walk) -> {
+        eachWalk(route, current(), (points, walk) -> {
             for (int point : points) {
-                if (distance(point, me) <= reach && !fading.containsKey(point)) {
+                if (near.test(point)) {
                     sink.tile(point, walk, fadeIn(point, now));
                 }
             }
         });
         for (var entry : fading.entrySet()) {
             float alpha = fadeAlpha(entry.getValue(), now);
-            if (alpha > 0 && distance(entry.getKey(), me) <= reach) {
-                sink.tile(entry.getKey(), normal, alpha);
+            if (alpha > 0.05f && near.test(entry.getKey())) {
+                sink.tile(entry.getKey(), current(), alpha);
             }
+        }
+        // The nearer part wins where they cross.
+        var later = laterLegs();
+        for (int i = later.size() - 1; i >= 0; i--) {
+            Color color = legColor(later.get(i).getKey());
+            eachWalked(later.get(i).getValue(), point -> {
+                if (near.test(point)) {
+                    sink.tile(point, color, 1);
+                }
+            });
         }
     }
 
@@ -2905,10 +2902,54 @@ public final class RouteFeature implements TourPanel.Actions {
         int blocked = blockedFrom(route);
         List<Step> steps = route == null ? List.of() : route.steps;
         for (int index = 0; index < steps.size(); index++) {
-            if (steps.get(index).kind == Kind.WALK) {
-                sink.accept(steps.get(index).points, blocked >= 0 && index >= blocked ? CANNOT : normal);
+            Step step = steps.get(index);
+            if (!step.isJump()) {
+                sink.accept(tilesOf(step), blocked >= 0 && index >= blocked ? CANNOT : normal);
             }
         }
+    }
+
+    /** A walk's tiles; a sail's as water tiles ({@link #sailTiles}). */
+    static int[] tilesOf(Step step) {
+        return step.kind == Kind.SAIL ? sailTiles(step.points) : step.points;
+    }
+
+    /**
+     * A sail's way as tiles on the water, so the ground and the minimap show it as they show a walk: its 4×4 sea
+     * blocks' centres joined by straight lines, each tile next to the one before.
+     */
+    static int[] sailTiles(int[] blocks) {
+        // A straight sail's blocks step half a block aside where its line falls between them: drawn as the line itself.
+        int[] kept = new int[blocks.length];
+        int n = 0;
+        for (int i = 0, j; i < blocks.length; i = j) {
+            kept[n++] = blocks[i];
+            for (j = i + 1; j + 1 < blocks.length && straight(blocks, i, j + 1); j++) {
+            }
+        }
+        blocks = Arrays.copyOf(kept, n);
+        int count = blocks.length == 0 ? 0 : 1;
+        for (int i = 1; i < blocks.length; i++) {
+            count += distance(blocks[i - 1], blocks[i]);
+        }
+        int[] tiles = new int[count];
+        n = 0;
+        for (int i = 0; i < blocks.length; i++) {
+            int from = blocks[i == 0 ? 0 : i - 1], to = blocks[i], steps = distance(from, to);
+            int ax = x(from), ay = y(from), dx = x(to) - ax, dy = y(to) - ay;
+            for (int k = i == 0 ? 0 : 1; k <= steps && n < count; k++) {
+                double t = steps == 0 ? 0 : k / (double) steps;
+                tiles[n++] = Tiles.pack(ax + (int) round(dx * t), ay + (int) round(dy * t), z(to));
+            }
+        }
+        return tiles;
+    }
+
+    /** Whether blocks i to k lie within half a block of the line from i to k. */
+    static boolean straight(int[] blocks, int i, int k) {
+        double ax = x(blocks[i]), ay = y(blocks[i]), dx = x(blocks[k]) - ax, dy = y(blocks[k]) - ay;
+        return IntStream.range(i + 1, k).allMatch(m -> abs((x(blocks[m]) - ax) * dy - (y(blocks[m]) - ay) * dx)
+            <= hypot(dx, dy) * (CELL / 2.0 + 0.1));
     }
 
     /** A walk of a route just gone (arrived, cleared), fading as it was drawn, its arrows where they were. */
@@ -3099,6 +3140,544 @@ public final class RouteFeature implements TourPanel.Actions {
         }
     }
 
+    /** The tiles round the player's tile for the HD minimap, drawn on Swing's thread into one picture. */
+    @NoArgsConstructor
+    @AllArgsConstructor
+    static final class MiniSnap {
+        /**
+         * Game x, y, plane, zoom × 100, tick, r: the picture covers r tiles each way round (x, y), at the minimap's own
+         * pixels a tile (its zoom).
+         */
+        int[] k;
+        /** Null when no tile is loaded yet. */
+        BufferedImage image;
+        boolean missing;
+    }
+
+    /** Game x and minus game y in tiles to the canvas as Perspective.localToMinimap turns them (angle 0-16383). */
+    static AffineTransform toMinimap(double cx, double cy, double zoom, int angle, double fx, double fy) {
+        var t = AffineTransform.getTranslateInstance(cx, cy);
+        t.rotate(angle * PI / 8192);
+        t.scale(zoom, zoom);
+        t.translate(-fx, fy);
+        return t;
+    }
+
+    /**
+     * Our tiles inside the game's minimap (setting hdMinimap), centred, zoomed and turned as the game draws it, with its
+     * dots drawn again on top. Draws only: clicks go to the game's minimap below.
+     */
+    final class HdMinimap extends Overlay {
+        /** Read on Swing's thread; the client thread only draws it. */
+        volatile MiniSnap snap;
+        volatile boolean asking;
+        /** The minimap's shape for each draw area sprite (fixed, resizable). */
+        final Map<Integer, Shape> masks = new HashMap<>();
+        /** Each dot sprite as a picture, made once (the Minimap plugin's colours swap in new sprites). */
+        final Map<SpritePixels, BufferedImage> dots = new HashMap<>();
+        BufferedImage flag;
+        int foot;
+        boolean zoomBack;
+        double savedZoom;
+        /**
+         * The game's walk from walkFrom to walkTo (tiles, clicked), ending at walkEnd; worked out again when either
+         * changes. Client thread.
+         */
+        int walkFrom = -1, walkTo = -1, walkEnd = -1;
+        int[] walkPath;
+
+        HdMinimap() {
+            setPosition(OverlayPosition.DYNAMIC);
+            setLayer(OverlayLayer.MANUAL);
+            // The compass's click layer is drawn right after the minimap and before the orbs.
+            drawAfterLayer(InterfaceID.Toplevel.COMPASSCLICK);
+            drawAfterLayer(InterfaceID.ToplevelOsrsStretch.COMPASSCLICK);
+            drawAfterLayer(InterfaceID.ToplevelPreEoc.COMPASSCLICK);
+        }
+
+        public Dimension render(Graphics2D g) {
+            var view = client.getTopLevelWorldView();
+            var focus = client.getCameraFocusEntity();
+            var area = client.getWidget(!client.isResized() ? InterfaceID.Toplevel.MINIMAP
+                : client.getVarbitValue(RESIZABLE_STONE_ARRANGEMENT) == 1 ? InterfaceID.ToplevelPreEoc.MINIMAP
+                : InterfaceID.ToplevelOsrsStretch.MINIMAP);
+            if (!config.hdMinimap() || client.getGameState() != GameState.LOGGED_IN || client.getLocalPlayer() == null
+                || view == null || view.isInstance() || client.getVarbitValue(MINIMAP_STATE) != 0 || area == null
+                || area.isHidden() || focus == null || focus.getCameraFocus() == null) {
+                return null;
+            }
+            // On a boat the camera follows it: its place in the main world, where the game's minimap centres.
+            var at = focus.getCameraFocus();
+            var boat = at.getWorldView() == 0 ? null : view.worldEntities().byIndex(focus.getWorldView().getId());
+            at = boat == null ? at : boat.transformToMainWorld(at);
+            double zoom = client.getMinimapZoom(), fx = view.getBaseX() + at.getX() / 128.0;
+            double fy = view.getBaseY() + at.getY() / 128.0;
+            // The minimap's zoom kept over restarts: put back at the plugin's first frame, saved when it changes.
+            if (!zoomBack) {
+                zoomBack = true;
+                savedZoom = config.minimapZoom();
+                if (savedZoom > 0) {
+                    client.setMinimapZoom(savedZoom);
+                }
+            } else if (zoom != savedZoom) {
+                savedZoom = zoom;
+                set("minimapZoom", zoom);
+            }
+            // As the game's own minimap: one picture at 4 pixels a tile, which its zoom and turn only scale and turn; at
+            // 2 under zoom 4 ({@link #halve}), so it is never drawn smaller: shrunk unsmoothed, every other row of pixels
+            // went, and walls one pixel wide fell into dots. 47 tiles each way reach past the minimap's edge (90 pixels
+            // from its middle) at the smallest zoom, 2.
+            int[] want = {(int) fx, (int) fy, view.getPlane(), zoom < 4 ? 200 : 400, client.getTickCount(), 47};
+            var s = snap;
+            if ((s == null || !Arrays.equals(s.k, 0, 4, want, 0, 4) || s.missing && s.k[4] != want[4]) && !asking) {
+                asking = true;
+                invokeLater(() -> {
+                    try {
+                        snap = read(want);
+                    } finally {
+                        asking = false;
+                    }
+                });
+            }
+            var mask = masks.computeIfAbsent(area.getSpriteId(), this::mask);
+            if (s == null || s.image == null || s.k[2] != want[2] || mask == null) {
+                return null;
+            }
+            var loc = area.getCanvasLocation();
+            int cx = loc.getX() + area.getWidth() / 2, cy = loc.getY() + area.getHeight() / 2;
+            var d = (Graphics2D) g.create();
+            d.clip(AffineTransform.getTranslateInstance(loc.getX(), loc.getY()).createTransformedShape(mask));
+            var t = toMinimap(cx, cy, zoom, client.getCameraYawTarget() & 16383, fx, fy);
+            // On whole pixels: the picture's corner put on a screen pixel, so the map and its icons move together a pixel at
+            // a time while walking instead of each rounding its own way (turned, unsmoothed pixels still crawl).
+            var corner = t.transform(new Point2D.Double(s.k[0] - s.k[5], -s.k[1] - s.k[5]), null);
+            t.preConcatenate(AffineTransform.getTranslateInstance(round(corner.getX()) - corner.getX(),
+                round(corner.getY()) - corner.getY()));
+            // Scaled by the zoom and turned with each pixel taken as it is (no smoothing): on the game's own pixels.
+            var m = (Graphics2D) d.create();
+            m.transform(t);
+            m.setRenderingHint(KEY_INTERPOLATION, VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+            double zs = s.k[3] / 100.0;
+            m.drawImage(s.image, new AffineTransform(1 / zs, 0, 0, 1 / zs, s.k[0] - s.k[5], -s.k[1] - s.k[5]), null);
+            boats(m, view, want[4], zoom);
+            m.dispose();
+            // The game's map icons round the player, at their own size, on whole pixels as the game draws them.
+            for (var icon : icons) {
+                var sprite = GameIcons.element(icon.element);
+                var spot = icon.drawn;
+                if (sprite != null && spot.getPlane() == want[2] && abs(spot.getX() - fx) < 40 && abs(spot.getY() - fy) < 40) {
+                    var c = t.transform(new Point2D.Double(spot.getX() + 0.5, -spot.getY() - 0.5), null);
+                    d.drawImage(sprite, (int) round(c.getX() - sprite.getWidth() / 2.0),
+                        (int) round(c.getY() - sprite.getHeight() / 2.0), null);
+                }
+            }
+            // Where one walks to: the game's walk there from here by the scene's own collision (at once, doors as they
+            // stand), under the dots; its flag at the walk's end on top of them. A spot nobody stands on: as the game, the
+            // nearest one reached round it (rings out to 10 tiles).
+            var dest = client.getLocalDestinationLocation();
+            int bx = view.getBaseX(), by = view.getBaseY();
+            int to = dest == null ? -1 : Tiles.pack(bx + dest.getSceneX(), by + dest.getSceneY(), want[2]);
+            int here = Tiles.pack(want[0], want[1], want[2]);
+            var maps = view.getCollisionMaps();
+            if (to >= 0 && maps != null && (here != walkFrom || to != walkTo)) {
+                int[][] flags = maps[want[2]].getFlags();
+                GameWalk.Shut shut = (x, y, z, dx, dy) -> !step(flags, x - bx, y - by, dx, dy);
+                int[] path = to == walkTo && walkEnd >= 0 ? GameWalk.path(null, shut, here, new int[]{walkEnd}) : null;
+                for (int r = 0; path == null && r <= 10; r++) {
+                    path = GameWalk.path(null, shut, here, ring(to, r));
+                }
+                walkFrom = here;
+                walkTo = to;
+                walkPath = path;
+                walkEnd = path == null ? -1 : path[path.length - 1];
+            }
+            if (to >= 0 && walkPath != null && to == walkTo && config.hdMinimapPath()) {
+                var line = new Path2D.Double();
+                line.moveTo(fx, -fy);
+                for (int i = 1; i < walkPath.length; i++) {
+                    line.lineTo(x(walkPath[i]) + 0.5, -y(walkPath[i]) - 0.5);
+                }
+                d.setStroke(new BasicStroke(1.5f));
+                d.setColor(walk());
+                d.draw(t.createTransformedShape(line));
+            }
+            // The game's own dots, which our tiles cover: ground items, NPCs, players, and oneself in the middle.
+            for (var row : view.getScene().getTiles()[view.getPlane()]) {
+                for (var tile : row) {
+                    if (tile != null && tile.getItemLayer() != null) {
+                        dot(d, 0, tile.getLocalLocation());
+                    }
+                }
+            }
+            for (var npc : view.npcs()) {
+                if (npc.getTransformedComposition() != null && npc.getTransformedComposition().isMinimapVisible()) {
+                    dot(d, 1, npc.getLocalLocation());
+                }
+            }
+            for (var other : view.players()) {
+                if (other != client.getLocalPlayer()) {
+                    dot(d, 2, other.getLocalLocation());
+                }
+            }
+            if (flag == null) {
+                var sprites = client.getSprites(client.getIndexSprites(), SpriteID.MAPMARKER, 0);
+                flag = sprites == null ? null : sprites[0].toBufferedImage();
+                // Its pole's foot: the lowest pixel drawn (the last one, row by row), put where the walk ends.
+                for (int i = 0; flag != null && i < flag.getWidth() * flag.getHeight(); i++) {
+                    foot = flag.getRGB(i % flag.getWidth(), i / flag.getWidth()) >>> 24 != 0 ? i : foot;
+                }
+            }
+            int end = walkPath != null && to == walkTo ? walkEnd : to;
+            if (end >= 0 && flag != null) {
+                var c = t.transform(new Point2D.Double(x(end) + 0.5, -y(end) - 0.5), null);
+                d.drawImage(flag, (int) round(c.getX()) - foot % flag.getWidth(), (int) round(c.getY()) - foot / flag.getWidth(),
+                    null);
+            }
+            d.setColor(Color.WHITE);
+            d.fillRect(cx - 1, cy - 1, 3, 3);
+            d.dispose();
+            return null;
+        }
+
+        /** A step the loaded scene's collision allows, in scene tiles: the game's own walls, doors as they stand now. */
+        boolean step(int[][] f, int x, int y, int dx, int dy) {
+            if (dx != 0 && dy != 0) {
+                return step(f, x, y, dx, 0) && step(f, x, y, 0, dy) && step(f, x + dx, y, 0, dy) && step(f, x, y + dy, dx, 0);
+            }
+            int bx = x + dx, by = y + dy;
+            if (min(min(x, y), min(bx, by)) < 0 || max(max(x, y), max(bx, by)) >= f.length) {
+                return false;
+            }
+            // No wall on the side left by, none on the side come in by, and the tile entered not blocked as a whole.
+            int out = dx > 0 ? BLOCK_MOVEMENT_EAST : dx < 0 ? BLOCK_MOVEMENT_WEST : dy > 0 ? BLOCK_MOVEMENT_NORTH
+                : BLOCK_MOVEMENT_SOUTH;
+            int in = dx > 0 ? BLOCK_MOVEMENT_WEST : dx < 0 ? BLOCK_MOVEMENT_EAST : dy > 0 ? BLOCK_MOVEMENT_SOUTH
+                : BLOCK_MOVEMENT_NORTH;
+            return (f[x][y] & out) == 0 && (f[bx][by] & (in | BLOCK_MOVEMENT_FULL)) == 0;
+        }
+
+        /** The tiles {@code r} tiles round {@code at} (a square ring; {@code at} itself at 0). */
+        int[] ring(int at, int r) {
+            int n = 2 * r + 1;
+            return IntStream.range(0, n * n).filter(i -> max(abs(i % n - r), abs(i / n - r)) == r)
+                .map(i -> Tiles.pack(x(at) + i % n - r, y(at) + i / n - r, z(at))).toArray();
+        }
+
+        /** Each boat's deck as the game's minimap draws it, by its world view: made again every 5 ticks, or at another zoom. */
+        final Map<Integer, MiniSnap> decks = new HashMap<>();
+
+        /**
+         * The boats over the picture ({@code g}: its transform), each its deck as the game's minimap draws it, turned and
+         * moved with it as the game draws them. Client thread.
+         */
+        void boats(Graphics2D g, WorldView view, int tick, double zoom) {
+            var smooth = (Graphics2D) g.create();
+            smooth.setRenderingHint(KEY_INTERPOLATION, VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+            // At the minimap's own pixels a tile (rounded up), so turning it unsmoothed loses next to nothing.
+            int scale = (int) ceil(zoom);
+            for (var boat : view.worldEntities()) {
+                var deck = boat.getWorldView();
+                if (deck == null || deck.getScene() == null) {
+                    continue;
+                }
+                int w = deck.getSizeX(), h = deck.getSizeY();
+                var made = decks.get(deck.getId());
+                if (made == null || tick - made.k[0] >= 5 || tick < made.k[0] || made.k[1] != scale) {
+                    decks.put(deck.getId(), made = new MiniSnap(new int[]{tick, scale}, deck(deck, scale), false));
+                }
+                // The picture's corners on the map: its south-west (the scene's local 0, 0), south-east and north-west.
+                Point2D[] at = new Point2D[3];
+                for (int k = 0; k < 3; k++) {
+                    var p = boat.transformToMainWorld(new LocalPoint(k == 1 ? w * 128 : 0, k == 2 ? h * 128 : 0, deck.getId()));
+                    at[k] = new Point2D.Double(view.getBaseX() + p.getX() / 128.0, -view.getBaseY() - p.getY() / 128.0);
+                }
+                double pw = made.image.getWidth(), ph = made.image.getHeight();
+                smooth.drawImage(made.image, new AffineTransform((at[1].getX() - at[0].getX()) / pw,
+                    (at[1].getY() - at[0].getY()) / pw, (at[0].getX() - at[2].getX()) / ph, (at[0].getY() - at[2].getY()) / ph,
+                    at[2].getX(), at[2].getY()), null);
+            }
+            smooth.dispose();
+            decks.keySet().removeIf(id -> view.worldEntities().byIndex(id) == null);
+        }
+
+        /**
+         * A boat at {@code scale} pixels a tile, north up, as the game's minimap shows one: its models seen from above
+         * (the hull, masts and sails; not the deck's floor tiles, which stick out past the hull), unsmoothed, with a dark
+         * edge round them. Client thread.
+         */
+        BufferedImage deck(WorldView deck, int scale) {
+            int w = deck.getSizeX() * scale, h = deck.getSizeY() * scale;
+            var image = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+            var g = image.createGraphics();
+            models(g, deck, scale);
+            g.dispose();
+            // The edge: each clear pixel beside a drawn one.
+            int[] px = image.getRGB(0, 0, w, h, null, 0, w), out = px.clone();
+            for (int i = 0; i < px.length; i++) {
+                int x = i % w, y = i / w;
+                if (px[i] >>> 24 == 0 && (x > 0 && px[i - 1] >>> 24 != 0 || x < w - 1 && px[i + 1] >>> 24 != 0
+                    || y > 0 && px[i - w] >>> 24 != 0 || y < h - 1 && px[i + w] >>> 24 != 0)) {
+                    out[i] = 0xff000001;
+                }
+            }
+            image.setRGB(0, 0, w, h, out, 0, w);
+            return image;
+        }
+
+        /**
+         * The boat's models seen from above, on a picture at {@code scale} pixels a tile: each face in its own lit colour
+         * (a textured one its texture's), the higher drawn over the lower.
+         */
+        void models(Graphics2D g, WorldView deck, int scale) {
+            var textures = client.getTextureProvider();
+            double brightness = textures == null ? 0.8 : textures.getBrightness();
+            int north = deck.getSizeY() * 128;
+            // Per face: its corners on the picture, how high it lies (floor, then height) and its colour.
+            List<double[]> faces = new ArrayList<>();
+            for (var floor : deck.getScene().getTiles()) {
+                for (var row : floor) {
+                    for (var tile : row) {
+                        if (tile == null) {
+                            continue;
+                        }
+                        int z = tile.getPlane();
+                        for (var object : tile.getGameObjects()) {
+                            if (object != null && object.getSceneMinLocation().equals(tile.getSceneLocation())) {
+                                faces(faces, object.getRenderable(), object.getLocalLocation(), object.getModelOrientation(),
+                                    z, north, textures, brightness);
+                            }
+                        }
+                        var wall = tile.getWallObject();
+                        if (wall != null) {
+                            faces(faces, wall.getRenderable1(), wall.getLocalLocation(), 0, z, north, textures, brightness);
+                            faces(faces, wall.getRenderable2(), wall.getLocalLocation(), 0, z, north, textures, brightness);
+                        }
+                        var ground = tile.getGroundObject();
+                        if (ground != null) {
+                            faces(faces, ground.getRenderable(), ground.getLocalLocation(), 0, z, north, textures, brightness);
+                        }
+                        var decoration = tile.getDecorativeObject();
+                        if (decoration != null) {
+                            faces(faces, decoration.getRenderable(), decoration.getLocalLocation(), 0, z, north, textures,
+                                brightness);
+                        }
+                    }
+                }
+            }
+            faces.sort(Comparator.comparingDouble(f -> f[6]));
+            var d = (Graphics2D) g.create();
+            d.scale(scale / 128.0, scale / 128.0);
+            var path = new Path2D.Double();
+            for (var f : faces) {
+                path.reset();
+                path.moveTo(f[0], f[1]);
+                path.lineTo(f[2], f[3]);
+                path.lineTo(f[4], f[5]);
+                path.closePath();
+                d.setColor(new Color((int) f[7], true));
+                d.fill(path);
+            }
+            d.dispose();
+        }
+
+        /** A model's faces into {@code faces}, turned by {@code orientation} (2048 a turn) and placed at {@code at}. */
+        void faces(List<double[]> faces, Renderable renderable, LocalPoint at, int orientation, int floor, int north,
+            TextureProvider textures, double brightness) {
+            var model = renderable == null ? null : renderable instanceof Model ? (Model) renderable : renderable.getModel();
+            if (model == null || at == null) {
+                return;
+            }
+            float[] vx = model.getVerticesX(), vy = model.getVerticesY(), vz = model.getVerticesZ();
+            int[] a = model.getFaceIndices1(), b = model.getFaceIndices2(), c = model.getFaceIndices3();
+            int[] colors = model.getFaceColors1(), middle = model.getFaceColors2(), last = model.getFaceColors3();
+            short[] texture = model.getFaceTextures();
+            byte[] see = model.getFaceTransparencies();
+            double sin = sin(orientation * PI / 1024), cos = cos(orientation * PI / 1024);
+            for (int f = 0; f < model.getFaceCount(); f++) {
+                int alpha = see == null ? 255 : 255 - (see[f] & 0xff);
+                int[] corners = {a[f], b[f], c[f]};
+                double height = -(vy[a[f]] + vy[b[f]] + vy[c[f]]) / 3;
+                // Masts, sails and rigging (higher than the railings) left out: from above they covered the hull.
+                if (last[f] == -2 || alpha == 0 || colors[f] == 0 || height > 120) {
+                    continue;
+                }
+                int rgb;
+                if (texture != null && texture[f] != -1 && textures != null) {
+                    // Textured: its pixels' mean colour, as light as the face is lit (its colour is then a lightness).
+                    rgb = shade(average(textures, texture[f]), colors[f] & 127);
+                } else {
+                    // The mean of its corners' colours (one colour when the third is -1).
+                    rgb = last[f] == -1 ? rgb(colors[f], brightness)
+                        : mean(rgb(colors[f], brightness), rgb(middle[f], brightness), rgb(last[f], brightness));
+                }
+                var face = new double[8];
+                for (int k = 0; k < 3; k++) {
+                    int v = corners[k];
+                    // The game turns a model so: x' = z sin + x cos, z' = z cos - x sin; its y grows downwards.
+                    face[2 * k] = at.getX() + vz[v] * sin + vx[v] * cos;
+                    face[2 * k + 1] = north - (at.getY() + vz[v] * cos - vx[v] * sin);
+                }
+                face[6] = floor * 1e6 + height;
+                face[7] = (double) (alpha << 24 | rgb);
+                faces.add(face);
+            }
+        }
+
+        /** The mean of three colours. */
+        int mean(int a, int b, int c) {
+            int out = 0;
+            for (int shift = 16; shift >= 0; shift -= 8) {
+                out = out << 8 | ((a >> shift & 0xff) + (b >> shift & 0xff) + (c >> shift & 0xff)) / 3;
+            }
+            return out;
+        }
+
+        /** Each texture's mean colour, by its id. */
+        final Map<Integer, Integer> textureColors = new HashMap<>();
+
+        int average(TextureProvider textures, int id) {
+            return textureColors.computeIfAbsent(id, k -> {
+                var all = textures.getTextures();
+                var pixels = k < all.length && all[k] != null && all[k].isLoaded() ? all[k].getPixels() : null;
+                if (pixels == null || pixels.length == 0) {
+                    return 0x808080;
+                }
+                long r = 0, g = 0, b = 0;
+                for (int p : pixels) {
+                    r += p >> 16 & 0xff;
+                    g += p >> 8 & 0xff;
+                    b += p & 0xff;
+                }
+                int n = pixels.length;
+                return (int) (r / n) << 16 | (int) (g / n) << 8 | (int) (b / n);
+            });
+        }
+
+        /** {@code rgb} at the game's light {@code light} (0 to 127; 64 as it is). */
+        int shade(int rgb, int light) {
+            int out = 0;
+            for (int shift = 16; shift >= 0; shift -= 8) {
+                out = out << 8 | min(255, (rgb >> shift & 0xff) * light / 64);
+            }
+            return out;
+        }
+
+        /** The game's colour (hue, saturation, lightness in 16 bits) in RGB, at the game's brightness. */
+        int rgb(int hsl, double brightness) {
+            double hue = (hsl >> 10 & 63) / 64.0 + 0.0078125, saturation = (hsl >> 7 & 7) / 8.0 + 0.0625;
+            double lightness = (hsl & 127) / 128.0, q = lightness < 0.5 ? lightness * (1 + saturation)
+                : lightness + saturation - lightness * saturation, p = 2 * lightness - q;
+            int rgb = 0;
+            for (double t : new double[]{hue + 1 / 3.0, hue, hue - 1 / 3.0}) {
+                t = t < 0 ? t + 1 : t > 1 ? t - 1 : t;
+                double v = 6 * t < 1 ? p + (q - p) * 6 * t : 2 * t < 1 ? q : 3 * t < 2 ? p + (q - p) * (2 / 3.0 - t) * 6 : p;
+                rgb = rgb << 8 | min(255, (int) (pow(v, brightness) * 256));
+            }
+            return rgb;
+        }
+
+        /** The game's dot sprite (the Minimap plugin's colours when it sets them): 0 item, 1 NPC, 2 player. */
+        void dot(Graphics2D g, int kind, LocalPoint local) {
+            Point p = localToMinimap(client, local);
+            var sprites = client.getMapDots();
+            if (p != null && sprites != null) {
+                g.drawImage(dots.computeIfAbsent(sprites[kind], SpritePixels::toBufferedImage), p.getX() - 1, p.getY() - 1, null);
+            }
+        }
+
+        /**
+         * The minimap's own shape: the empty pixels of its draw area's sprite, which covers what lies round it (made once a
+         * sprite, some 20 ms).
+         */
+        Shape mask(int sprite) {
+            var sprites = client.getSprites(client.getIndexSprites(), sprite, 0);
+            if (sprites == null) {
+                return null;
+            }
+            var s = sprites[0];
+            int[] px = s.getPixels();
+            var path = new Path2D.Double();
+            for (int i = 0; i < px.length; i++) {
+                if (px[i] == 0) {
+                    path.append(new Rectangle(s.getOffsetX() + i % s.getWidth(), s.getOffsetY() + i / s.getWidth(), 1, 1),
+                        false);
+                }
+            }
+            return new Area(path);
+        }
+
+        /**
+         * Swing's thread: our map's tiles of a square of {@code size} tiles (its west and north edges on the map as
+         * drawn) at {@code z} pixels a tile, unsmoothed: 1 when a tile is missing (not downloaded yet), 2 when one was
+         * drawn.
+         */
+        int paintMap(Graphics2D g, MapView on, BaseMap map, int west, int north, int size, int plane, double z) {
+            // The tile cache's level of as many pixels a tile (4: level 2, as is); a tile cache tile spans span game tiles.
+            int lv = (int) round(log(z) / log(2)), span = TileCache.TILE_SIZE >> lv, got = 0;
+            double f = z / (1 << lv);
+            g.setRenderingHint(KEY_INTERPOLATION, VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+            for (int tx = floorDiv(west, span); tx * span < west + size; tx++) {
+                for (int ty = floorDiv(north - size, span); ty * span < north; ty++) {
+                    var key = new TileCache.Key(map.tiles, lv, plane, tx, ty);
+                    // Not in memory (just started): from the disk at once, as the map does, not after a wait.
+                    var tile = on.tiles.get(key);
+                    tile = tile != null ? tile : on.tiles.fromDiskNow(key);
+                    g.drawImage(tile, new AffineTransform(f, 0, 0, f, (tx * span - west) * z, (north - (ty + 1) * span) * z),
+                        null);
+                    got |= tile == null ? 1 : 2;
+                }
+            }
+            return got;
+        }
+
+        /**
+         * Swing's thread: the map round a game tile at the minimap's own pixels a tile, asking the tile cache for those
+         * it lacks. An upper floor's tiles are see-through: the game's own minimap shows below.
+         */
+        MiniSnap read(int[] want) {
+            var on = screens.length == 0 ? null : screens[0].view;
+            var game = new WorldPoint(want[0], want[1], want[2]);
+            var map = on == null || on.maps == null ? null : on.maps.find(game);
+            if (map == null) {
+                return null;
+            }
+            var p = MapView.shownOn(map, game);
+            int r = want[5];
+            var image = new BufferedImage(8 * r, 8 * r, BufferedImage.TYPE_INT_ARGB);
+            var g = image.createGraphics();
+            int got = paintMap(g, on, map, p.getX() - r, p.getY() + r, 2 * r, p.getPlane(), 4);
+            g.dispose();
+            var s = new MiniSnap(want, (got & 2) == 0 ? null : want[3] == 200 ? halve(image) : image, (got & 1) != 0);
+            on.tiles.endFrame();
+            return s;
+        }
+
+        /**
+         * Half the size, each pixel one of its four: a wall's or a door's when one is there (as the map's tiles draw them),
+         * so walls one pixel wide stay whole and as bright; else the north-west one, as the game shrinks its own.
+         */
+        BufferedImage halve(BufferedImage image) {
+            int w = image.getWidth() / 2, h = image.getHeight() / 2, wide = w * 2;
+            int[] in = image.getRGB(0, 0, wide, h * 2, null, 0, wide), out = new int[w * h];
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    int at = 2 * y * wide + 2 * x, pick = in[at];
+                    for (int k : new int[]{at, at + 1, at + wide, at + wide + 1}) {
+                        int rgb = in[k] & 0xffffff;
+                        if (in[k] >>> 24 != 0 && (rgb == 0xcccccc || rgb == 0xcc0000)) {
+                            pick = in[k];
+                            break;
+                        }
+                    }
+                    out[y * w + x] = pick;
+                }
+            }
+            var half = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+            half.setRGB(0, 0, w, h, out, 0, w);
+            return half;
+        }
+    }
+
     /**
      * Of {@code route}'s steps, the items the first one needing any needs into {@code next}, and after a bank step what
      * the steps after it need into {@code bank}. A house step goes by its teleport ("… → Fairy ring").
@@ -3108,7 +3687,7 @@ public final class RouteFeature implements TourPanel.Actions {
         Step found = null;
         for (var step : route == null ? List.<Step>of() : route.steps) {
             banked |= step.kind == BANK;
-            String name = plain(step.name), first = name == null ? null : name.split(" → ")[0];
+            String name = step.name, first = step.said.into != null ? step.said.into : name;
             var spell = name == null ? null : byStep.getOrDefault(SPELL + name, byStep.get(SPELL + first));
             var items = name == null ? null : byStep.getOrDefault(name, byStep.get(first));
             if (banked) {
@@ -3131,10 +3710,9 @@ public final class RouteFeature implements TourPanel.Actions {
 
     final class ItemsOverlay extends WidgetItemOverlay {
         Route itemsOf;
-        boolean worn;
+        boolean fairyRing;
         int spell;
         Set<Integer> next = Set.of(), bank = Set.of();
-        final Map<Integer, Image> outlines = new HashMap<>();
 
         ItemsOverlay() {
             showOnInventory();
@@ -3151,11 +3729,10 @@ public final class RouteFeature implements TourPanel.Actions {
                 next = new HashSet<>();
                 bank = new HashSet<>();
                 var step = routeItems(route, stepItems, next, bank);
-                // A fairy ring's staff: worn is enough.
-                worn = step != null && step.kind != TRANSPORT;
-                var row = step == null ? null : SPELLS.get(plain(step.name).split(" → ")[0]);
+                // A fairy ring's staff: worn is enough, and none is needed after the Lumbridge Elite Diary.
+                fairyRing = step != null && PoiType.FAIRY_RING.displayName.equals(step.category);
+                var row = step == null ? null : SPELLS.get(step.said.into != null ? step.said.into : step.name);
                 spell = row == null ? -1 : Integer.parseInt(row[1]);
-                outlines.clear();
             }
             var button = config.routeItems() && spell > 0 ? client.getWidget(spell) : null;
             if (button != null && !button.isHidden()) {
@@ -3168,11 +3745,12 @@ public final class RouteFeature implements TourPanel.Actions {
         public void renderItemOverlay(Graphics2D g, int itemId, WidgetItem item) {
             int group = WidgetUtil.componentToInterface(item.getWidget().getId());
             // The Lumbridge Elite Diary opens fairy rings without a staff.
-            if (config.routeItems() && (bank(group) ? bank.contains(itemId) : next.contains(itemId) && (worn
+            if (config.routeItems() && (bank(group) ? bank.contains(itemId) : next.contains(itemId) && (!fairyRing
                 || group != InterfaceID.WORNITEMS && client.getVarbitValue(LUMBRIDGE_DIARY_ELITE_COMPLETE) != 1))) {
                 var at = item.getCanvasBounds();
-                g.drawImage(outlines.computeIfAbsent(itemId,
-                    id -> itemManager.getItemOutline(id, 1, config.routeJumpColor())), at.x, at.y, null);
+                // Of the stack as shown (coins' pile); ItemManager keeps each outline by item, amount and colour.
+                g.drawImage(itemManager.getItemOutline(itemId, item.getQuantity(), config.routeJumpColor()),
+                    at.x, at.y, null);
             }
         }
     }
@@ -3270,18 +3848,13 @@ public final class RouteFeature implements TourPanel.Actions {
         /** "Can't yet: 45 Sailing, Lunar Diplomacy". */
         static String cannotYet(Route route) {
             var missing = route.steps.stream().filter(RouteText::lacks)
-                .flatMap(step -> Arrays.stream(lack(step).split(",\\s*"))).map(String::trim).filter(part -> !part.isEmpty())
+                .flatMap(step -> Arrays.stream(step.said.lack.split(",\\s*"))).map(String::trim).filter(part -> !part.isEmpty())
                 .collect(toCollection(LinkedHashSet::new));
             return missing.isEmpty() ? "Can't yet." : "Can't yet: " + String.join(", ", missing);
         }
 
         static boolean lacks(Step step) {
-            return step.detail != null && step.detail.startsWith("You lack");
-        }
-
-        /** What a step {@link #lacks}, as "45 Sailing, Lunar Diplomacy". */
-        static String lack(Step step) {
-            return step.detail.replaceFirst("^You lack:?\\s*", "");
+            return step.said.lack != null;
         }
 
         /** The first step the player cannot take yet (drawn red from there on), or -1. */
@@ -3313,25 +3886,16 @@ public final class RouteFeature implements TourPanel.Actions {
             return notes;
         }
 
-        static final Pattern BRING = Pattern.compile("\\(bring (.+)\\)$");
-
         /** As "an axe, a machete", or null. */
         static String bring(Route route) {
-            var tools = new LinkedHashSet<String>();
-            for (Step step : route.steps) {
-                for (var obstacle : step.obstacles) {
-                    Matcher m = BRING.matcher(obstacle.text);
-                    if (m.find()) {
-                        tools.add(m.group(1));
-                    }
-                }
-            }
+            var tools = route.steps.stream().flatMap(step -> step.obstacles.stream()).map(o -> o.tool)
+                .collect(toCollection(LinkedHashSet::new));
             return tools.isEmpty() ? null : String.join(", ", tools);
         }
 
         /** Whether a detail is only the caution that it may need something unknown. */
         static boolean unsure(String detail) {
-            return detail != null && detail.startsWith("May need");
+            return Pathfinder.UNKNOWN_NEEDS.equals(detail);
         }
 
         static String duration(Route route) {
@@ -3348,97 +3912,38 @@ public final class RouteFeature implements TourPanel.Actions {
         static final String INTO = " → ";
         /** The same in the game, whose font has no "→". */
         static final String THEN = " -> ";
-        static final Pattern LEVEL = Pattern.compile("\\(level (\\d+)\\)");
 
         /**
-         * The jewellery box's menu in its order (list "jewellery box"), which gives each place its key: 1 to 9, then A to
-         * R. Our name for the place, then the box's where it differs; kept as our name to the box's key and name
-         * ("burthorpe games room" to "5 Burthorpe").
+         * A step's name as said: a house step by what it uses in the house ("Jewellery box 5 Burthorpe"), after its way in
+         * and {@code then} unless that is null; a jump to the bank with what is taken there (" → Bank: Dramen staff").
+         * {@code brief}: as a long text in the game says it ("Jwlry box 5").
          */
-        static Map<String, String> box(List<String> places) {
-            var keyed = new HashMap<String, String>();
-            String keys = "123456789ABCDEFGHIJKLMNOPQR";
-            for (int i = 0; i < min(places.size(), keys.length()); i++) {
-                var names = places.get(i).split("\\|");
-                keyed.put(names[0].toLowerCase(ROOT), keys.charAt(i) + " " + names[names.length - 1]);
-            }
-            return keyed;
-        }
-
-        static final RouteFiles.Table<Map<String, String>> BOX = new RouteFiles.Table<>(() -> box(Pathfinder.list(
-            "jewellery box")));
-
-        /**
-         * What a house step uses in the house, as the game says it: "Jewellery box 5 Burthorpe" (with the key the box's
-         * menu gives it), "Mounted glory Edgeville", "Mounted talisman Xeric's Heart", "Portal Falador",
-         * "Fairy ring BKS", "Obelisk level 27".
-         */
-        static String inHouse(String name) {
-            String plain = BankDetour.plain(name);
-            if (plain.length() < name.length()) {
-                return inHouse(plain) + name.substring(plain.length());
-            }
-            int arrow = name.indexOf(INTO);
-            String what = arrow < 0 ? name : name.substring(arrow + INTO.length());
-            int colon = what.indexOf(": ");
-            String place = what.substring(what.lastIndexOf(": ") + 2);
-            if (what.startsWith("Jewellery box: ") || what.startsWith("Mounted glory: ")) {
-                String keyed = BOX.get().get(place.toLowerCase(ROOT));
-                return what.startsWith("Mounted") ? "Mounted glory " + (keyed == null ? place : keyed.substring(2))
-                    : "Jewellery box " + (keyed == null ? place : keyed);
-            }
-            if (what.startsWith("Mounted ")) {
-                // "Mounted talisman Xeric's Heart", "Mounted pendant Lithkren".
-                return what.substring(0, colon) + " " + place;
-            }
-            if (what.startsWith("House obelisk: ")) {
-                Matcher level = LEVEL.matcher(what);
-                return level.find() ? "Obelisk level " + level.group(1) : "Obelisk " + place;
-            }
-            if (what.startsWith("House ") && colon > 0 || what.startsWith("Portal nexus: ")) {
-                // "House fairy ring: BKS", "House spirit tree: …", "House portal: Falador", "Portal nexus: Falador".
-                String thing = what.startsWith("House ") ? what.substring("House ".length(), colon) : "portal nexus";
-                return Character.toUpperCase(thing.charAt(0)) + thing.substring(1) + " " + place;
-            }
-            return what;
+        static String named(Step step, String then, boolean brief) {
+            var s = step.said;
+            String name = step.kind != Kind.HOUSE || s.inHouse == null ? step.name
+                : (then == null || s.into == null ? "" : brief && s.brief != null ? s.brief + ", " : s.into + then)
+                + (brief && s.boxed != null ? s.boxed : s.inHouse);
+            return s.taken == null || step.kind == Kind.BANK ? name : name + BankDetour.TO_BANK + String.join(", ", s.taken);
         }
 
         /**
          * A step as said in the game, over the head and on its tile: a house step outside the house by the way in and
          * what to use there ("Teleport to House -> Jewellery box 5 Burthorpe"), inside by what to use; a way into the
-         * house with the house step after it; else as {@link #describe}.
+         * house with the house step after it; else as {@link #describe}. A long text cut short: "TP house, Jwlry box 2
+         * -> Bank: Dramen staff".
          */
         static String said(Route route, Step step, boolean inside) {
-            String text = saying(route, step, inside);
-            if (text.length() > LONG) {
-                // A long text cut short: "TP house, Jwlry box O → Bank: Dramen staff".
-                for (var way : HOUSE_WAYS.get()) {
-                    var into = way.getKey().matcher(text);
-                    if (into.find()) {
-                        text = way.getValue() + ", " + text.substring(into.end());
-                        break;
-                    }
-                }
-                text = BOX_PLACE.matcher(text).replaceFirst("Jwlry box $1");
-            }
+            String text = saying(route, step, inside, false);
             // The game's font has no "→" (also in "… → Bank: …").
-            return text.replace(INTO, THEN);
+            return (text.length() > LONG ? saying(route, step, inside, true) : text).replace(INTO, THEN);
         }
 
-        /** Characters above which a text in the game is {@link #shortened}. */
+        /** Characters above which a text in the game is said {@code brief}. */
         static final int LONG = 50;
-        static final Pattern BOX_PLACE = Pattern.compile("Jewellery box (\\S) .*?(?=" + INTO + "|" + THEN + "|$)");
 
-        /** Each way into the house as a text starts with it, and its short name ("TP house"). */
-        static final RouteFiles.Table<List<Map.Entry<Pattern, String>>> HOUSE_WAYS = new RouteFiles.Table<>(() ->
-            own("house").stream().map(way -> Map.entry(Pattern.compile("^" + Pattern.quote(way[1])
-            + "( \\(Inside\\))?(" + INTO + "|" + THEN + ")"), way[6])).collect(toList()));
-
-        static String saying(Route route, Step step, boolean inside) {
+        static String saying(Route route, Step step, boolean inside, boolean brief) {
             if (step.kind == Kind.HOUSE && step.name != null) {
-                int arrow = BankDetour.plain(step.name).indexOf(INTO);
-                return arrow < 0 || inside ? inHouse(step.name)
-                    : step.name.substring(0, arrow) + THEN + inHouse(step.name);
+                return named(step, inside ? null : THEN, brief);
             }
             int to = step.last();
             if (!inside && step.isJump() && to >= 0 && HousePlan.contains(to)) {
@@ -3446,7 +3951,8 @@ public final class RouteFeature implements TourPanel.Actions {
                 for (int i = route.steps.indexOf(step) + 1; i < route.steps.size(); i++) {
                     Step next = route.steps.get(i);
                     if (next.kind == Kind.HOUSE && next.name != null) {
-                        return describe(step) + THEN + inHouse(next.name);
+                        return (brief && step.said.brief != null ? step.said.brief + ", " : describe(step) + THEN)
+                            + named(next, null, brief);
                     }
                     if (next.kind != Kind.WALK && next.kind != Kind.STAIRS) {
                         break;
@@ -3460,29 +3966,22 @@ public final class RouteFeature implements TourPanel.Actions {
             switch (step.kind) {
                 case WALK:
                     return "Walk " + plural(step.points.length - 1, "tile")
-                        + (step.doors > 0 ? " (" + plural(step.doors, "door") + ")" : "");
+                        + (step.doors.length > 0 ? " (" + plural(step.doors.length, "door") + ")" : "");
                 case SAIL:
                     return "Sail about " + (step.points.length - 1) * CELL + " tiles";
                 case STAIRS:
                     return step.name + " to floor " + z(step.last());
-                case HOUSE:
-                    if (step.name != null) {
-                        int arrow = BankDetour.plain(step.name).indexOf(INTO);
-                        return (arrow < 0 ? "" : step.name.substring(0, arrow + INTO.length())) + inHouse(step.name);
-                    }
-                    // Falls through.
                 default:
-                    return step.name != null ? step.name : step.kind.name().toLowerCase(ROOT);
+                    return step.name != null ? named(step, INTO, false) : step.kind.name().toLowerCase(ROOT);
             }
         }
 
         static final Color OUTLINE = new Color(0, 0, 0, 140);
 
-        static void paint(Graphics2D g, Projection p, Route route, Color walk, Color jump) {
+        static void paint(Graphics2D g, MapView p, Route route, Color walk, Color jump) {
             float width = (float) max(2.5, min(6, pow(2, p.zoom()) / 2));
             Stroke solid = new BasicStroke(width, CAP_ROUND, JOIN_ROUND);
-            Stroke dashed = new BasicStroke(max(2f, width - 1), CAP_ROUND, JOIN_ROUND, 1,
-                new float[]{7, 6}, 0);
+            Stroke dashed = new BasicStroke(max(2f, width - 1), CAP_ROUND, JOIN_ROUND, 1, new float[]{7, 6}, 0);
             Stroke outline = new BasicStroke(width + 2.5f, CAP_ROUND, JOIN_ROUND);
             int blocked = blockedFrom(route);
             for (int index = 0; index < route.steps.size(); index++) {
@@ -3507,7 +4006,7 @@ public final class RouteFeature implements TourPanel.Actions {
                     }
                     continue;
                 }
-                var line = path(p, step.points);
+                var line = path(p, step.points, true);
                 g.setStroke(outline);
                 g.setColor(OUTLINE);
                 g.draw(line);
@@ -3539,37 +4038,57 @@ public final class RouteFeature implements TourPanel.Actions {
         }
 
         /** The points' line where shown, broken where not. */
-        static Path2D path(Projection p, int[] points) {
+        static Path2D path(MapView p, int[] points) {
+            return path(p, points, false);
+        }
+
+        /**
+         * The same, {@code inView}: without the pieces wholly past one edge of the view (a long custom route has tens
+         * of thousands, a few of them in view). Not for dashes: their pattern would start again where the view begins.
+         */
+        static Path2D path(MapView p, int[] points, boolean inView) {
             var line = new Path2D.Double();
-            boolean drawing = false;
             var at = drawn(p, points);
+            // Past the widest stroke's half: a piece's end there leaves no cap in view.
+            double m = 16, right = p.width() + m, bottom = p.height() + m, lastX = 0, lastY = 0;
+            boolean drawing = false;
+            int lastSide = -1;
             for (int i = 0; i < at.length; i += 3) {
                 if (!shown(p, at, i)) {
                     drawing = false;
-                } else if (drawing) {
-                    line.lineTo(p.screenX(at[i]), p.screenY(at[i + 1]));
-                } else {
-                    line.moveTo(p.screenX(at[i]), p.screenY(at[i + 1]));
-                    drawing = true;
+                    lastSide = -1;
+                    continue;
                 }
+                double x = p.screenX(at[i]), y = p.screenY(at[i + 1]);
+                int side = !inView ? 0 : (x < -m ? 1 : x > right ? 2 : 0) | (y < -m ? 4 : y > bottom ? 8 : 0);
+                if (lastSide >= 0 && (side & lastSide) == 0) {
+                    if (!drawing) {
+                        line.moveTo(lastX, lastY);
+                        drawing = true;
+                    }
+                    line.lineTo(x, y);
+                } else {
+                    drawing = false;
+                }
+                lastSide = side;
+                lastX = x;
+                lastY = y;
             }
             return line;
         }
 
-        /** Where routes' points are drawn on one map, worked out once per points and map (not per point every frame). */
-        static final Map<int[], float[]> DRAWN = new WeakHashMap<>();
-        static BaseMap drawnOn;
+        /**
+         * Per map, where routes' points are drawn on it, worked out once per points and map (not per point every
+         * frame): the two views may show different maps. Weakly: a version's maps go with it.
+         */
+        static final Map<BaseMap, Map<int[], float[]>> DRAWN = new WeakHashMap<>();
 
         /**
          * Per point: its x and y as drawn ({@code NaN} where this map does not show it) and its floor (-1 at sea: shown on
          * every floor).
          */
-        static synchronized float[] drawn(Projection p, int[] points) {
-            if (p.map() != drawnOn) {
-                DRAWN.clear();
-                drawnOn = p.map();
-            }
-            return DRAWN.computeIfAbsent(points, k -> {
+        static synchronized float[] drawn(MapView p, int[] points) {
+            return DRAWN.computeIfAbsent(p.map(), map -> new WeakHashMap<>()).computeIfAbsent(points, k -> {
                 float[] at = new float[points.length * 3];
                 for (int i = 0; i < points.length; i++) {
                     int node = points[i];
@@ -3584,21 +4103,21 @@ public final class RouteFeature implements TourPanel.Actions {
             });
         }
 
-        static boolean shown(Projection p, float[] at, int i) {
+        static boolean shown(MapView p, float[] at, int i) {
             return !Float.isNaN(at[i]) && (at[i + 2] < 0 || at[i + 2] == p.plane());
         }
 
-        static boolean visible(Projection p, int node) {
+        static boolean visible(MapView p, int node) {
             var game = worldPoint(node);
             // Where the map draws it: a part drawn elsewhere (the Kalphite Lair) there, on the floor drawn.
             return p.shows(game) && (isSea(node) || p.shown(game).getPlane() == p.plane());
         }
 
-        static double x(Projection p, int node) {
+        static double x(MapView p, int node) {
             return p.screenX(isSea(node) ? Tiles.x(node) : p.shown(worldPoint(node)).getX() + 0.5);
         }
 
-        static double y(Projection p, int node) {
+        static double y(MapView p, int node) {
             return p.screenY(isSea(node) ? Tiles.y(node) : p.shown(worldPoint(node)).getY() + 0.5);
         }
     }

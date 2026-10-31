@@ -9,7 +9,7 @@ import lombok.*;
 
 /** The map's Icons panel: how icons show, and each kind of icon on or off by itself, under its group. Swing thread. */
 @RequiredArgsConstructor
-final class IconPanel {
+class IconPanel {
     final MapConfig config;
     /** Builds the panel again where it shows. */
     final Runnable changed;
@@ -47,16 +47,15 @@ final class IconPanel {
         return new TreeSet<>(Arrays.asList(config.iconsOff().split("\n")));
     }
 
+    /** Built again by the plugin's iconsOff change, as the other map's panel is: not here too. */
     void save(Set<String> off) {
         off.remove("");
         set.accept("iconsOff", String.join("\n", off));
-        changed.run();
     }
 
     JComponent section(int width) {
         var panel = SearchResults.column();
-        panel.add(check("Quest status", PoiType.t("t26"),
-            config.questStatus(), on -> set.accept("questStatus", on)));
+        panel.add(check("Quest status", PoiType.t("t26"), config.questStatus(), on -> set.accept("questStatus", on)));
         panel.add(check("Hide completed quests", "No quest start icons for finished quests",
             config.hideCompletedQuests(), on -> set.accept("hideCompletedQuests", on)));
         panel.add(check("Mark what I can't use", PoiType.t("t27"), config.markLocked(), on -> set.accept("markLocked", on)));
@@ -88,8 +87,10 @@ final class IconPanel {
             SearchResults.add(panel, 6, TourPanel.row(fold, all));
             (unfolded ? named : Map.<String, Supplier<BufferedImage>>of()).forEach((name, picture) -> {
                 var image = picture.get();
+                boolean wide = image.getWidth() >= image.getHeight();
+                // Within 15 by 15 with its shape kept, as the map draws it (PoiIcons.paintPicture).
                 var icon = new JLabel(new ImageIcon(image.getWidth() > 17
-                    ? image.getScaledInstance(15, 15, Image.SCALE_SMOOTH) : image));
+                    ? image.getScaledInstance(wide ? 15 : -1, wide ? -1 : 15, Image.SCALE_SMOOTH) : image));
                 icon.setBorder(BorderFactory.createEmptyBorder(0, 16, 0, 0));
                 panel.add(TourPanel.row(icon, check(name, null, !off.contains(name), on -> {
                     var now = off();

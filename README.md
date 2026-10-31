@@ -12,6 +12,6 @@ Search a monster, shop or item to see every place it is found, nearest first, wi
 
 ![Searching for black dragons](images/search.png)
 
-The map and its data come from the plugin author's server, which sees your IP address like any website does. Nothing about you or your account is sent.
+The map and its data come from the plugin author's server, which sees your IP address like any website does, and which parts of the map you look at the first time (with Follow player on, around where you stand). Nothing about your account is sent to it.
 
 [Credits](THIRD_PARTY_NOTICES.md)

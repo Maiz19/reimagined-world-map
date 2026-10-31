@@ -6,7 +6,7 @@ import javax.swing.*;
 import net.runelite.client.ui.*;
 
 /** A panel floating over the map (card, search results, custom routes): a title bar with fold and close buttons. */
-final class Floating extends JPanel {
+class Floating extends JPanel {
     static final int BAR = 24;
     /** The soft white of names and buttons on the map. */
     static final Color LIGHT = new Color(200, 200, 205);

@@ -14,15 +14,16 @@ import net.runelite.api.coords.*;
  * in; ours only where the game has none. Our entrances and passages are the planner's only.
  */
 @RequiredArgsConstructor(access = AccessLevel.PACKAGE)
-final class MapData {
+class MapData {
     /**
-     * Of places.json. An incompatible change raises it, and a new map version built with the new builder carries it:
-     * a published version's files never change, and the plugin refuses another format.
+     * Of route.zip's places.json (2: the released plugins' places.json beside it). An incompatible change raises it, and
+     * a new map version built with the new builder carries it: a published version's files never change, and the plugin
+     * refuses another format.
      */
-    static final int FORMAT = 2;
+    static final int FORMAT = 3;
 
     @RequiredArgsConstructor
-    static final class Place {
+    static class Place {
         final WorldPoint point;
         final String name;
         /**
@@ -32,48 +33,34 @@ final class MapData {
         final String kind;
     }
 
-    /** One of the game's own map icons (drawn by {@link IconLayer} from the game's sprites) with what it stands for. */
-    static final class Icon {
-        final WorldPoint location;
+    /**
+     * One of the game's own map icons (drawn by {@link IconLayer} from the game's sprites) with what it stands for, as
+     * places.json holds it: the builder works out where it is drawn, its toggle and group.
+     */
+    static class Icon {
+        WorldPoint location;
         /** Differs from {@link #location} where the map draws a place elsewhere (the Keldagrim tunnel). */
-        final WorldPoint drawn;
-        final BaseMap map;
-        /** Our own place at the same spot ({@link #own}), else its own. */
-        final Poi poi;
-        final boolean own;
+        WorldPoint drawn;
+        BaseMap map;
+        /** Our own place at the same spot ({@link #own}, places.json's pois[{@link #of}]), else its own. */
+        Poi poi;
+        boolean own;
+        int of = -1;
         /** The game's map element, or -1. */
-        final int element;
+        int element;
         /** On a floor above the ground, which the map draws flat on the ground floor as the game's map does (Keldagrim). */
-        final boolean flat;
+        boolean flat;
         /** The name of its key on the game's world map ("Shipwright"), or null. */
-        final String kind;
+        String kind;
         /** What the Icons panel shows and hides it by: its type's name, else its key's ("Fairy ring (AIQ)": "Fairy ring"). */
-        final String toggle;
-        final Layer group;
+        String toggle;
+        Layer group;
         /**
-         * Our places it stands for besides its own (places.json, worked out by the builder): passages the map does not
-         * draw whose way in it is, ours beside it named by its key ("Shipwright Sornik" by "Shipwright"); not drawn.
+         * Our places it stands for besides its own (pois[{@link #covered}], worked out by the builder): passages the map
+         * does not draw whose way in it is, ours beside it named by its key ("Shipwright Sornik" by "Shipwright"); not drawn.
          */
-        final List<Poi> covers = new ArrayList<>();
-
-        Icon(WorldPoint location, BaseMap map, Poi poi, boolean own, int element, String kind) {
-            this.location = location;
-            drawn = MapView.shownOn(map, location);
-            this.map = map;
-            this.poi = poi;
-            this.own = own;
-            this.element = element;
-            flat = map != null && drawn != null && drawn.getPlane() > 0
-                && drawn.getPlane() < WorldMapMoves.floorsDrawnFlat(map.id, drawn.getX(), drawn.getY());
-            this.kind = kind;
-            var type = poi.type;
-            String name = kind == null || type.layer != Layer.DUNGEONS && type != PoiType.SHOP && type != PoiType.GAME_ICON
-                ? type.displayName : kind.replaceFirst(" \\(.*\\)$", "");
-            var row = PoiType.key(name);
-            toggle = row == null || row[1].isEmpty() ? name : row[1];
-            var listed = row == null ? null : value(Layer.class, row[2]);
-            group = listed == null ? type.layer : listed;
-        }
+        final transient List<Poi> covers = new ArrayList<>();
+        int[] covered = {};
     }
 
     /** In order of layers, with the planner's passages among them. */
@@ -167,166 +154,97 @@ final class MapData {
     }
 
     /**
-     * A map version's places.json, with the same version's map list and region table: what the plugin shows and plans
-     * with. Unknown keys are ignored; a place of an unknown type or malformed is left out, and an icon or a kind's
-     * entry standing for it. Data thread.
+     * A map version's places.json (in its route.zip), with the same version's map list and region table: what the
+     * plugin shows and plans with, bound as it is. Unknown keys are ignored; a place of an unknown type is left out, and
+     * an icon or a kind's entry standing for it. Data thread.
      *
      * @throws IOException not readable, or not this version's places in this format
      */
     static MapData read(Gson gson, Reader json, BaseMaps maps, String version) throws IOException {
+        var needs = new HashMap<Needs, Needs>();
         PlacesFile file;
         try {
-            file = gson.fromJson(json, PlacesFile.class);
+            file = gson.newBuilder().registerTypeAdapter(WorldPoint.class, WorldData.POINT)
+                .registerTypeAdapter(BaseMap.class, (JsonDeserializer<BaseMap>) (e, t, c) -> maps.byId(e.getAsInt()))
+                .registerTypeAdapter(Needs.class, (JsonDeserializer<Needs>) (e, t, c) -> {
+                    String[] raw = c.deserialize(e, String[].class);
+                    return needs.computeIfAbsent(new Needs(raw[0], raw[1], raw[2], raw[3]), n -> n);
+                }).create().fromJson(json, PlacesFile.class);
         } catch (RuntimeException e) {
             throw new IOException("Unreadable places of map version " + version, e);
         }
         if (file == null || file.format != FORMAT || !version.equals(file.version)) {
             throw new IOException("Not the places of map version " + version + " in format " + FORMAT);
         }
-        Reading reading = new Reading(maps);
-        // As listed, null where left out: an icon of ours gives its place's index in it.
+        // As listed, null where left out; then numbered as kinds and hits number them: each with its places nearby,
+        // then the game's icons' own.
         var listed = new ArrayList<Poi>();
-        var pois = new ArrayList<Poi>();
-        Set<Poi> hidden = Collections.newSetFromMap(new IdentityHashMap<>());
-        for (var place : list(file.pois)) {
-            var poi = reading.poi(place, 0);
-            listed.add(poi);
-            if (poi != null) {
-                pois.add(poi);
-                if (Boolean.TRUE.equals(place.hidden)) {
-                    hidden.add(poi);
-                }
-            }
+        var numbered = new ArrayList<Poi>();
+        for (var poi : file.pois) {
+            listed.add(known(poi));
+            numbered.add(known(poi));
+            poi.nearby.forEach(near -> numbered.add(known(poi) == null ? null : known(near)));
+            poi.nearby.removeIf(near -> known(near) == null);
+            poi.members.removeIf(member -> known(member) == null);
         }
-        Map<Integer, String> keys = file.keys == null ? Collections.emptyMap() : file.keys;
         var icons = new ArrayList<Icon>();
-        for (var icon : list(file.icons)) {
-            var at = point(icon.at);
-            var poi = icon.own == null ? reading.poi(icon.poi, 0) : item(listed, icon.own);
-            if (at != null && poi != null) {
-                var made = new Icon(at, reading.map(icon.map), poi, icon.own != null, icon.element, keys.get(icon.element));
-                for (int i : icon.covers == null ? new int[0] : icon.covers) {
-                    made.covers.add(item(listed, i));
-                }
-                made.covers.removeIf(Objects::isNull);
-                icons.add(made);
+        for (var icon : file.icons) {
+            if (icon.own) {
+                icon.poi = item(listed, icon.of);
+            } else {
+                numbered.add(known(icon.poi));
+            }
+            for (int i : icon.covered) {
+                icon.covers.add(item(listed, i));
+            }
+            icon.covers.removeIf(Objects::isNull);
+            if (known(icon.poi) != null) {
+                icons.add(icon);
             }
         }
-        // Labels and kinds as listed too, null where left out: a search hit gives its target's index.
-        var listedLabels = new ArrayList<Place>();
-        for (var label : list(file.labels)) {
-            var at = point(label.at);
-            listedLabels.add(at == null || label.name == null ? null : new Place(at, label.name, label.kind));
-        }
-        // The kinds' places as numbered: the places read, each with what it stands for, then the spots.
         var places = new ArrayList<KindIndex.Entry>();
-        for (var poi : reading.numbered) {
+        var kinds = new ArrayList<KindIndex.Kind>();
+        for (var poi : numbered) {
             places.add(poi == null ? null : new KindIndex.Entry(poi.name, poi.location, poi.note, poi));
         }
-        for (var spot : list(file.spots)) {
-            var at = point(spot.at);
-            places.add(at == null || spot.name == null ? null : new KindIndex.Entry(spot.name, at, spot.detail, null));
-        }
-        var listedKinds = new ArrayList<KindIndex.Kind>();
-        for (var written : list(file.kinds)) {
-            var kind = new KindIndex.Kind(written.label, value(PoiType.class, written.type), written.page);
-            for (int i : written.places == null ? new int[0] : written.places) {
-                var place = item(places, i);
-                if (place != null) {
-                    kind.entries.add(place);
-                }
+        places.addAll(file.spots);
+        for (var kind : file.kinds) {
+            for (int i : kind.places) {
+                kind.entries.add(item(places, i));
             }
-            listedKinds.add(written.label == null || kind.entries.isEmpty() ? null : kind);
+            kind.entries.removeIf(Objects::isNull);
+            for (int i = 0; i < kind.groups.size(); i++) {
+                var first = item(places, kind.firsts[i]);
+                kind.groups.get(i).poi = first == null ? null : first.poi;
+            }
+            kinds.add(kind.entries.isEmpty() ? null : kind);
         }
         var hits = new ArrayList<Hit>();
-        for (var hit : list(file.hits)) {
+        for (var hit : file.hits) {
             var type = value(Type.class, hit.type);
             Object target = type == null ? null : type == Type.MAP ? maps.byId(hit.target)
-                : item(type == Type.PLACE ? listedLabels : type == Type.KIND
-                || type == Type.KIND_PLACE ? listedKinds : reading.numbered, hit.target);
+                : item(type == Type.PLACE ? file.labels : type == Type.KIND
+                || type == Type.KIND_PLACE ? kinds : numbered, hit.target);
             if (target != null && hit.label != null) {
                 var made = new Hit(type, hit.label, hit.words == null ? hit.label : hit.words,
-                    hit.place, target, point(hit.at), value(PoiType.class, hit.icon));
+                    hit.place, target, hit.at, value(PoiType.class, hit.icon));
                 made.later = hit.later == null ? 0 : hit.later;
                 hits.add(made);
             }
         }
-        var gameIcons = icons.stream().filter(icon -> !icon.own).map(icon -> icon.poi).distinct()
-            .collect(Collectors.toList());
-        return new MapData(pois, hidden, nonNull(listedLabels), icons, gameIcons, new KindIndex(nonNull(listedKinds)),
-            new SearchIndex(hits));
+        var pois = nonNull(listed);
+        Set<Poi> hidden = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (int i : file.hidden) {
+            hidden.add(item(listed, i));
+        }
+        hidden.remove(null);
+        var gameIcons = icons.stream().filter(icon -> !icon.own).map(icon -> icon.poi).distinct().collect(Collectors.toList());
+        return new MapData(pois, hidden, file.labels, icons, gameIcons, new KindIndex(nonNull(kinds)), new SearchIndex(hits));
     }
 
-    /** Reading one file: its version's maps, and one Needs for equal requirements (a few hundred in thousands). */
-    @RequiredArgsConstructor
-    static final class Reading {
-        final BaseMaps maps;
-        final Map<Needs, Needs> needs = new HashMap<>();
-        /** Listed places and those nearby, then the game's icons' own, in the file's order: null where left out. */
-        final List<Poi> numbered = new ArrayList<>();
-
-        /** A map id the list lacks reads as none. */
-        BaseMap map(Integer id) {
-            return id == null ? null : maps.byId(id);
-        }
-
-        /** Null when malformed. */
-        Needs needs(String[] raw) {
-            if (raw == null) {
-                return Needs.NONE;
-            }
-            if (raw.length != 4) {
-                return null;
-            }
-            Needs read = new Needs(text(raw[0]), text(raw[1]), text(raw[2]), text(raw[3]));
-            return read.isEmpty() ? Needs.NONE : needs.computeIfAbsent(read, n -> n);
-        }
-
-        /** {@code depth}: 0 for a listed place (which may stand for places nearby), 1 nearby, 2 a stacked member. */
-        Poi poi(PoiJson place, int depth) {
-            var type = place == null ? null : value(PoiType.class, place.type);
-            var at = type == null ? null : point(place.at);
-            Needs needs = at == null ? null : needs(place.needs);
-            // Older map versions name the Seers option of Camelot Teleport "Bank": read as a bank step.
-            String name = "Camelot Teleport: Bank".equals(place.name) ? "Camelot Teleport: Seers" : place.name;
-            var poi = needs == null || name == null ? null : new Poi(type, name, at, map(place.map),
-                place.group, needs, place.wiki, map(place.target), place.note);
-            if (depth < 2) {
-                numbered.add(poi);
-            }
-            var drawn = poi == null || place.drawn == null ? null : point(place.drawn);
-            if (drawn != null) {
-                poi.drawnAt = drawn;
-            }
-            if (poi != null && place.picture != null) {
-                poi.picture = place.picture;
-            }
-            if (poi == null) {
-                // The places nearby are left out with it, keeping their numbers.
-                numbered.addAll(Collections.nCopies(depth == 0 && place != null ? list(place.nearby).size() : 0, null));
-                return null;
-            }
-            for (var link : list(place.links)) {
-                var to = point(link.at);
-                Needs linkNeeds = needs(link.needs);
-                if (to != null && linkNeeds != null && link.name != null) {
-                    poi.links.add(new Poi.Link(link.name, to, map(link.map), linkNeeds));
-                }
-            }
-            for (var member : depth < 2 ? list(place.members) : Collections.<PoiJson>emptyList()) {
-                var read = poi(member, 2);
-                if (read != null) {
-                    poi.members.add(read);
-                }
-            }
-            for (var near : depth == 0 ? list(place.nearby) : Collections.<PoiJson>emptyList()) {
-                var read = poi(near, 1);
-                if (read != null) {
-                    poi.nearby.add(read);
-                }
-            }
-            return poi;
-        }
+    /** The place, or null for one of a type this plugin does not know. */
+    static Poi known(Poi poi) {
+        return poi == null || poi.type == null ? null : poi;
     }
 
     static <E extends Enum<E>> E value(Class<E> type, String name) {
@@ -345,101 +263,33 @@ final class MapData {
         return list.stream().filter(Objects::nonNull).collect(Collectors.toUnmodifiableList());
     }
 
-    static WorldPoint point(int[] at) {
-        return at != null && at.length == 3 ? new WorldPoint(at[0], at[1], at[2]) : null;
-    }
-
-    static String text(String raw) {
-        return raw == null ? "" : raw;
-    }
-
-    static <T> List<T> list(List<T> list) {
-        return list == null ? Collections.emptyList() : list;
-    }
-
     /**
-     * A map version's places.json (format 2) as {@link #read} binds it and the builder (test sources) writes it, one
-     * class for both. Points are [x, y, plane]; map ids those of the version's maps.json. Absent: null, false or none.
+     * A map version's places.json (format 3, in its route.zip) as {@link #read} binds it and the builder (test sources)
+     * writes it: the plugin's own classes, points as [x, y, plane], maps as their ids in the version's maps.json, needs as
+     * [skills, items, quests, varbits].
      */
-    static final class PlacesFile {
+    static class PlacesFile {
         int format;
         String version;
         List<String> credits;
         /** In drawing order, the planner's passages among them. */
-        List<PoiJson> pois;
-        List<IconJson> icons;
-        List<LabelJson> labels;
-        /** Map element id to the name of its key on the game's world map. */
-        Map<Integer, String> keys;
+        List<Poi> pois = List.of();
+        /** Of {@link #pois}, those not drawn. */
+        int[] hidden = {};
+        List<Icon> icons = List.of();
+        List<Place> labels = List.of();
         /** RuneLite's skilling spots that are places of a kind. */
-        List<SpotJson> spots;
-        List<KindJson> kinds;
-        List<HitJson> hits;
-    }
-
-    static final class PoiJson {
-        String type, name;
-        int[] at;
-        /** Where the map draws it, when not at {@code at} (an upper floor's teleport drawn on the ground floor). */
-        int[] drawn;
-        Integer map;
-        String group;
-        /** Skills, items, quests, varbits, raw as the travel tables write them. */
-        String[] needs;
-        String wiki;
-        Integer target;
-        String note;
-        /** The game's picture for it ({@link Poi#picture}). */
-        Integer picture;
-        /** Not drawn (top-level places only). */
-        Boolean hidden;
-        List<LinkJson> links;
-        /** Stacked teleports. */
-        List<PoiJson> members;
-        /** Only on a top-level place. */
-        List<PoiJson> nearby;
-    }
-
-    static final class LinkJson {
-        String name;
-        int[] at;
-        Integer map;
-        String[] needs;
-    }
-
-    static final class IconJson {
-        int[] at;
-        Integer map;
-        int element = -1;
-        /** The index in pois of the place the icon stands for; else {@link #poi}, its own place. */
-        Integer own;
-        PoiJson poi;
-        /** {@link Icon#covers} by their index in pois. */
-        int[] covers;
-    }
-
-    static final class LabelJson {
-        int[] at;
-        String name, kind;
-    }
-
-    static final class SpotJson {
-        int[] at;
-        String name, detail;
-    }
-
-    /** Every place of one kind ({@link KindIndex}). */
-    static final class KindJson {
-        String label, type, page;
+        List<KindIndex.Entry> spots = List.of();
         /**
-         * Its places in order, numbered as read: each of {@link PlacesFile#pois} followed by its places nearby, then
-         * the places of the icons that are not ours, then the spots.
+         * Every place of one kind: its places in order ({@link KindIndex.Kind#places}), numbered as read: each of
+         * {@link #pois} followed by its places nearby, then the places of the icons that are not ours, then the spots.
          */
-        int[] places;
+        List<KindIndex.Kind> kinds = List.of();
+        List<HitJson> hits = List.of();
     }
 
     /** One of the place search's hits ({@link SearchIndex.Hit}). */
-    static final class HitJson {
+    static class HitJson {
         String type, label;
         /** The words it is found by, when not its label's. */
         String words;
@@ -447,10 +297,10 @@ final class MapData {
         String place;
         /**
          * The map id of a MAP, else an index: in {@link PlacesFile#labels} for a PLACE, {@link PlacesFile#kinds} for a
-         * KIND or KIND_PLACE, the places as {@link KindJson#places} numbers them for an ICON or GAME_ICON.
+         * KIND or KIND_PLACE, the places as {@link KindIndex.Kind#places} numbers them for an ICON or GAME_ICON.
          */
         int target;
-        int[] at;
+        WorldPoint at;
         String icon;
         Double later;
     }

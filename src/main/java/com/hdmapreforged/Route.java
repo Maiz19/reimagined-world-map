@@ -20,7 +20,50 @@ final class Route {
     @AllArgsConstructor
     static final class Obstacle {
         final int at;
-        final String text;
+        /** "Chop-down Vines (bring an axe)", with what it takes ("an axe"). */
+        final String text, tool;
+    }
+
+    /**
+     * What a step says beyond its name and detail, as parts: put into words where shown ({@code RouteText}), never read
+     * back out of a text.
+     */
+    @AllArgsConstructor
+    @NoArgsConstructor(force = true)
+    @With(PACKAGE)
+    static final class Said {
+        static final Said NONE = new Said();
+
+        /** What the player lacks ("45 Sailing, 3200 × Coins"), as "You lack: " says it; else null. */
+        final String lack;
+        /** What it needs from the bank ("Law rune", "3 × Air rune"), as "From the bank: " names it; else null. */
+        final List<String> bank;
+        /** Any other detail its needs give ("Needs: 25 Magic, items"). */
+        final String note;
+        /** What is taken at the bank: on the bank step, and on the jump there, whose name it follows (" → Bank: "). */
+        final List<String> taken;
+        /** A house step's way in from outside ("Teleport to House"); else null. */
+        final String into;
+        /** A way into one's house as said in a long text ("TP house"). */
+        final String brief;
+        /** What a house step uses in the house, as the game says it ("Jewellery box 5 Burthorpe"), and in a long text ("Jwlry box 5"). */
+        final String inHouse, boxed;
+        /** A fairy ring's codes, in the order dialled. */
+        final List<String> codes;
+        /** The ids of items in {@link #lack} the game had not named yet ("Item 995"). */
+        final List<Integer> unnamed;
+
+        /** With {@code more} after what it says ("You lack: 3200 × Coins. Also needs: …"). */
+        Said and(String more) {
+            String text = text();
+            return more == null || more.isEmpty() ? this : text == null ? withNote(more) : lack != null
+                ? withLack(lack + ". " + more) : withBank(null).withNote(text + ". " + more);
+        }
+
+        /** As a step's detail says it: "You lack: …", "From the bank: …" or the note. */
+        String text() {
+            return lack != null ? "You lack: " + lack : bank != null ? BankDetour.FROM_BANK + String.join(", ", bank) : note;
+        }
     }
 
     @AllArgsConstructor
@@ -38,10 +81,14 @@ final class Route {
         final String name;
         @With(PACKAGE)
         final String detail;
-        final int cost, doors;
+        final int cost;
+        /** A walk's doors: for each, the index in {@link #points} of the tile it opens onto. */
+        final int[] doors;
         final List<Obstacle> obstacles;
         /** Teleport or transport kind ("Hot air balloon"), to leave out all of that kind; or null. */
         final String category;
+        @With(PACKAGE)
+        final Said said;
 
         int first() {
             return points[0];
@@ -153,7 +200,7 @@ final class Route {
                     continue;
                 }
                 long dx = x(player) - x(point), dy = y(player) - y(point), d = dx * dx + dy * dy;
-                if (isSea(point)) {
+                if (isSea(point) && isSea(player)) {
                     d /= (long) CELL * CELL;
                 }
                 // Ties go to the later point, so a route passing a spot twice follows the player forward.
@@ -177,8 +224,14 @@ final class Route {
                 }
                 var obstaclesLeft = step.obstacles.stream()
                     .filter(o -> Arrays.stream(rest).anyMatch(p -> p == o.at)).collect(Collectors.toList());
-                step = new Step(step.kind, rest, step.name, step.detail, step.cost * rest.length / step.points.length,
-                    step.doors, obstaclesLeft, step.category);
+                int cut = bestIndex;
+                int[] doorsLeft = Arrays.stream(step.doors).filter(k -> k > cut).map(k -> k - cut).toArray();
+                // A walk's detail names its obstacles: only those still ahead.
+                String detail = step.kind != Step.Kind.WALK ? step.detail : obstaclesLeft.isEmpty() ? null
+                    : obstaclesLeft.stream().map(o -> o.text).distinct().collect(Collectors.joining("; "));
+                step = new Step(step.kind, rest, step.name, detail,
+                    step.cost * (rest.length - 1) / (step.points.length - 1), doorsLeft, obstaclesLeft, step.category,
+                    step.said);
             }
             left.add(step);
         }
@@ -207,14 +260,5 @@ final class Route {
 
     Step first(Step.Kind kind) {
         return steps.stream().filter(step -> step.kind == kind).findFirst().orElse(null);
-    }
-
-    public String toString() {
-        StringBuilder sb = new StringBuilder(outcome + " " + (cost + 1) / 2 + " ticks, " + nodes + " nodes");
-        for (Step step : steps) {
-            sb.append("\n  ").append(step.kind).append(' ').append(step.name == null ? "" : step.name).append(' ')
-                .append(format(step.first())).append(" -> ").append(format(step.last()));
-        }
-        return sb.toString();
     }
 }

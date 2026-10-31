@@ -1,24 +1,22 @@
 package com.hdmapreforged;
 
+import static com.hdmapreforged.PoiType.t;
 import static javax.swing.BorderFactory.*;
-import static com.hdmapreforged.FriendsWidget.*;
 import static com.hdmapreforged.SearchResults.*;
 import static net.runelite.client.ui.ColorScheme.*;
 
 import java.awt.*;
 import java.awt.event.*;
 import java.awt.geom.*;
-import java.awt.image.*;
 import java.util.*;
 import java.util.List;
 import java.util.function.*;
 import javax.swing.*;
-import javax.swing.Timer;
 import net.runelite.api.coords.*;
 import net.runelite.client.ui.*;
 
 /** The sidebar: buttons to open the map, the route's steps, custom routes and the party. Swing thread. */
-final class MapPanel extends PluginPanel {
+class MapPanel extends PluginPanel {
     /** Text width inside the sidebar's padding. */
     static final int TEXT_WIDTH = PANEL_WIDTH - 52;
 
@@ -30,44 +28,22 @@ final class MapPanel extends PluginPanel {
     final JLabel routeHeading = heading("Route");
     /** A route's steps not built yet: it changed while the sidebar was hidden. */
     IntFunction<JComponent> waitingRoute;
-    /** The party list: members' experience drops rise from their rows' right ends over it, as beside their markers. */
-    final JPanel friendsHolder = new JPanel() {
-        protected void paintChildren(Graphics g) {
-            super.paintChildren(g);
-            for (Component row : getComponents()) {
-                Object id = row instanceof JComponent ? ((JComponent) row).getClientProperty(MEMBER) : null;
-                if (id != null) {
-                    PartyOverlay.paintXp((Graphics2D) g, friends.xp((Long) id), friends::skill,
-                        row.getX() + row.getWidth() - 64, row.getY() + row.getHeight() - 5);
-                }
-            }
-        }
-    };
     final JPanel toursHolder = column();
     TourPanel.Actions tours;
     /** The custom route open for editing, or null for the list. */
     IntFunction<JComponent> editorSection;
     TourPanel editor;
-    long openFriend = -1;
-    /** The open member's details, its page and the mouse over it kept while it is rebuilt. */
-    final MemberPages pages;
-    final java.awt.Point[] pagesMouse = new java.awt.Point[1];
-    final Timer friendsTimer;
-    /** Repaints the party list while experience drops rise in it. */
-    final Timer xpTimer = new Timer(40, e -> risingXp());
-    /** The members the party list shows. */
-    List<Long> listed = List.of();
-    String friendsShown;
+    /** The party list as the map's party button paints it ({@link FriendsWidget#paintList}). */
+    FriendsWidget party;
+    final Painted friendsView;
 
     MapPanel(Runnable openMap, Runnable openWindow, Consumer<WorldPoint> showOnMap, PartyMap friends,
         Function<WorldPoint, String> placeName) {
         super(false);
         this.showOnMap = showOnMap;
         this.friends = friends;
-        pages = new MemberPages(friends);
-        friendsHolder.setLayout(new BoxLayout(friendsHolder, BoxLayout.Y_AXIS));
-        friendsHolder.setOpaque(false);
-        friendsHolder.setAlignmentX(LEFT_ALIGNMENT);
+        friendsView = new Painted(PANEL_WIDTH - 36, (g, clicks) -> party.paintList(g, PANEL_WIDTH - 36, clicks, this));
+        party = new FriendsWidget(friends, null, new MemberPages(friends), friendsView::repaint);
         this.placeName = placeName;
         setLayout(new BorderLayout());
         setBackground(DARK_GRAY_COLOR);
@@ -75,15 +51,15 @@ final class MapPanel extends PluginPanel {
         JPanel content = column();
         content.setBorder(createEmptyBorder(10, 10, 10, 10));
         JPanel buttons = new JPanel(new GridLayout(1, 2, 6, 0));
-        buttons.add(tip(button("Open map", openMap), PoiType.t("t16")));
-        buttons.add(tip(button("In a window", openWindow), "The map in a window of its own"));
+        buttons.add(tip(button("Open map", openMap), t("t16")));
+        buttons.add(tip(button("In a window", openWindow), t("mpWindow")));
         content.add(fitted(buttons));
         content.add(Box.createVerticalStrut(10));
         content.add(card(routeHeading, routeHolder));
         content.add(Box.createVerticalStrut(8));
         content.add(card(heading("Custom routes"), toursHolder));
         content.add(Box.createVerticalStrut(8));
-        content.add(card(heading("Party"), friendsHolder));
+        content.add(card(heading("Party"), friendsView));
 
         // Never wider than the sidebar: what does not fit wraps.
         JPanel top = new Fitted(new BorderLayout(), 0);
@@ -91,36 +67,15 @@ final class MapPanel extends PluginPanel {
         top.add(content, BorderLayout.NORTH);
         add(MapScreen.scroll(top), BorderLayout.CENTER);
 
-        // Shown (its tab picked, the sidebar opened): a route that waited is built now, and the party as it is (joined
-        // in RuneLite's Party panel meanwhile), not as it was when hidden.
+        // Shown (its tab picked, the sidebar opened): a route that waited is built now.
         addHierarchyListener(e -> {
             if (waitingRoute != null && isShowing()) {
                 showRoute(waitingRoute);
             }
-            if (isShowing()) {
-                refreshFriends();
-            }
         });
         showRoute(null);
-        // Every 2 seconds.
-        friendsTimer = new Timer(2000, e -> refreshFriends());
-        friendsTimer.start();
-        // Members' news come with every message (each step they take): looked at once a fifth of a second at most.
-        var news = new Timer(200, e -> {
-            refreshFriends();
-            friendsHolder.repaint();
-            if (isShowing() && listed.stream().anyMatch(id -> !friends.xp(id).isEmpty())) {
-                xpTimer.start();
-            }
-        });
-        news.setRepeats(false);
-        // Run on the Swing thread whenever members' news came (a drop, experience).
-        friends.sidebarNews = () -> {
-            if (isShowing() && !news.isRunning()) {
-                news.start();
-            }
-        };
-        refreshFriends();
+        // Run on the Swing thread whenever members' news came (a party joined, a step, a drop, experience).
+        friends.sidebarNews = friendsView::repaint;
     }
 
     /** The route's steps ({@code section} builds them for a width), or null for none. */
@@ -133,7 +88,7 @@ final class MapPanel extends PluginPanel {
         routeHolder.removeAll();
         routeHeading.setVisible(section == null);
         if (section == null) {
-            routeHolder.add(text(PoiType.t("t17")));
+            routeHolder.add(text(t("t17")));
         } else {
             var steps = section.apply(TEXT_WIDTH);
             steps.setAlignmentX(LEFT_ALIGNMENT);
@@ -147,7 +102,7 @@ final class MapPanel extends PluginPanel {
         editor = new TourPanel(actions, section -> {
             editorSection = section;
             showTours();
-        }, showOnMap, "\u2039 All routes");
+        }, showOnMap, t("mpAll"));
         redoTours();
     }
 
@@ -182,9 +137,9 @@ final class MapPanel extends PluginPanel {
         List<Tour> saved = tours == null ? Collections.emptyList() : tours.tours();
         String running = tours == null ? null : tours.runningTour();
         if (saved.isEmpty()) {
-            toursHolder.add(text(PoiType.t("t18")));
+            toursHolder.add(text(t("t18")));
             JButton make = tip(button("New route", () -> edit(new Tour(Tour.unique(saved, "My route"),
-                Collections.emptyList()))), PoiType.t("t19"));
+                Collections.emptyList()))), t("t19"));
             make.setAlignmentX(LEFT_ALIGNMENT);
             toursHolder.add(make);
         }
@@ -192,111 +147,22 @@ final class MapPanel extends PluginPanel {
             boolean runs = tour.name.equals(running);
             String what = plural(tour.stops.size(), "stop");
             toursHolder.add(entry(tour.name, runs ? "Running, " + what : what, runs ? new Color(120, 220, 140) : null,
-                PoiType.t("t20"), () -> edit(tour)));
+                t("t20"), () -> edit(tour)));
         }
         refresh(toursHolder);
     }
 
     void stop() {
-        friendsTimer.stop();
-        xpTimer.stop();
-    }
-
-    void risingXp() {
-        friendsHolder.repaint();
-        if (!isShowing() || listed.stream().allMatch(id -> friends.xp(id).isEmpty())) {
-            xpTimer.stop();
-        }
-    }
-
-    /** Rebuilt only when something shown changed. */
-    void refreshFriends() {
-        if (!isShowing() && friendsShown != null) {
-            return;
-        }
-        boolean in = friends.party.isInParty();
-        List<Row> rows = in ? friends.rows() : Collections.emptyList();
-        boolean rejoin = !in && friends.lastParty() != null;
-        StringBuilder key = new StringBuilder(in ? "in" : rejoin ? "out, rejoin" : "out");
-        var places = new String[rows.size()];
-        for (int i = 0; i < rows.size(); i++) {
-            Row row = rows.get(i);
-            places[i] = place(row);
-            key.append('|').append(row.name).append(',').append(row.world).append(',').append(places[i])
-                .append(',').append(row.point != null).append(',').append(row.color);
-            var got = friends.members.session(row.id);
-            key.append(',').append(got == null || got.latest.isEmpty() ? 0 : got.latest.get(0).at);
-            if (row.id == openFriend) {
-                // Its pages paint what is shared as it comes: no rebuild for it.
-                key.append(",open");
-            }
-        }
-        if (key.toString().equals(friendsShown)) {
-            return;
-        }
-        friendsShown = key.toString();
-        friendsHolder.removeAll();
-        if (!in) {
-            if (rejoin) {
-                JButton join = tip(button("Rejoin party", () -> friends.join(this)), "Join your last party again");
-                join.setAlignmentX(LEFT_ALIGNMENT);
-                friendsHolder.add(capped(join));
-                friendsHolder.add(Box.createVerticalStrut(4));
-            }
-            friendsHolder.add(text(PoiType.t("t21")));
-        } else if (rows.isEmpty()) {
-            friendsHolder.add(text("No one else in your party yet."));
-        }
-        int me = friends.myWorld;
-        var ids = new ArrayList<Long>();
-        for (int i = 0; i < rows.size(); i++) {
-            Row row = rows.get(i);
-            ids.add(row.id);
-            String where = row.point == null ? "Not sharing where they are"
-                : (row.world > 0 && row.world != me ? "World " + row.world + ", " : "")
-                    + (places[i] != null ? places[i] : "on the map");
-            var line = friend(row, where);
-            line.putClientProperty(MEMBER, row.id);
-            friendsHolder.add(line);
-            var got = friends.members.session(row.id);
-            if (got != null && !got.latest.isEmpty()) {
-                friendsHolder.add(latest(got));
-            }
-            if (row.id == openFriend) {
-                friendsHolder.add(details(row, me));
-            }
-        }
-        listed = ids;
-        placeNames.keySet().retainAll(ids);
-        refresh(friendsHolder);
-    }
-
-    /** The party member a row of the list is. */
-    static final String MEMBER = "partyMember";
-
-    /** A member's latest shared drops this session, newest first: picture and worth (an untradeable's name on hover). */
-    JComponent latest(PartyMembers.Session got) {
-        JPanel line = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        line.setOpaque(false);
-        for (var drop : got.latest.subList(0, Math.min(3, got.latest.size()))) {
-            BufferedImage picture = friends.item(drop.item, drop.quantity);
-            JLabel label = new JLabel(drop.name != null ? "" : PartyOverlay.coins(drop.value),
-                picture == null ? null : new ImageIcon(picture), JLabel.LEFT);
-            label.putClientProperty("html.disable", Boolean.TRUE);
-            label.setFont(FontManager.getRunescapeSmallFont());
-            label.setForeground(drop.name != null ? PartyOverlay.UNTRADEABLE : LIGHT_GRAY_COLOR);
-            label.setToolTipText(drop.name);
-            line.add(label);
-        }
-        return fitted(line);
+        party.ticker.stop();
     }
 
     /** Each member's place name and where it was worked out: again only once they moved off it (a scan of the labels). */
     final Map<Long, Object[]> placeNames = new HashMap<>();
 
-    String place(Row row) {
+    /** Where a member is, by name, for the party list. */
+    String where(PartyMembers.Marker row) {
         if (row.point == null) {
-            return null;
+            return t("mpNoShare");
         }
         Object[] known = placeNames.get(row.id);
         // A name not found (the labels still loading) is asked again.
@@ -305,7 +171,7 @@ final class MapPanel extends PluginPanel {
             known = new Object[]{row.point, placeName.apply(row.point)};
             placeNames.put(row.id, known);
         }
-        return (String) known[1];
+        return known[1] != null ? (String) known[1] : "on the map";
     }
 
     static void refresh(JComponent c) {
@@ -313,90 +179,67 @@ final class MapPanel extends PluginPanel {
         c.repaint();
     }
 
-    void rebuildFriends() {
-        friendsShown = null;
-        refreshFriends();
-    }
+    /** What a painter paints as on the map ({@link MapView.Clicks}), with its clicks and tooltips; as tall as it painted. */
+    static class Painted extends JComponent {
+        final List<MapView.Control> areas = new ArrayList<>();
+        final ToIntBiFunction<Graphics2D, MapView.Clicks> painter;
+        java.awt.Point mouse;
 
-    JComponent friend(Row row, String where) {
-        return entry(row.name, where, row.color != null ? row.color : MEDIUM_GRAY_COLOR,
-            row.id == openFriend ? "Close" : "What " + row.name + " carries, wears and can do", () -> {
-                openFriend = openFriend == row.id ? -1 : row.id;
-                rebuildFriends();
-            });
-    }
+        Painted(int width, ToIntBiFunction<Graphics2D, MapView.Clicks> painter) {
+            this.painter = painter;
+            setPreferredSize(new Dimension(width, 40));
+            setAlignmentX(LEFT_ALIGNMENT);
+            var mice = new MouseAdapter() {
+                public void mouseMoved(MouseEvent e) {
+                    mouse = e.getPoint();
+                    repaint();
+                }
 
-    /** A member's details: an on-map button and their world, their orbs and one page of what they share. */
-    JComponent details(Row row, int me) {
-        JPanel box = column();
-        box.setBorder(createEmptyBorder(0, 6, 8, 0));
-        JPanel actions = new JPanel(new GridLayout(1, 2, 4, 0));
-        JButton show = tip(button("On map", () -> {
-            showOnMap.accept(row.point);
-            friends.follow(row.id);
-        }), "Open the map where they are");
-        show.setEnabled(row.point != null);
-        actions.add(show);
-        if (row.world > 0 && me > 0 && row.world != me) {
-            JLabel world = new JLabel("World " + row.world, JLabel.CENTER);
-            world.setToolTipText(PoiType.t("t22"));
-            actions.add(world);
+                public void mouseExited(MouseEvent e) {
+                    mouse = null;
+                    repaint();
+                }
+
+                public void mouseReleased(MouseEvent e) {
+                    var at = area(e.getPoint());
+                    if (at != null) {
+                        at.action.run();
+                    }
+                }
+            };
+            addMouseListener(mice);
+            addMouseMotionListener(mice);
+            ToolTipManager.sharedInstance().registerComponent(this);
         }
-        box.add(fitted(actions));
-        box.add(Box.createVerticalStrut(6));
-        box.add(pagesView(row.id));
-        return box;
-    }
 
-    /** A member's pages as the map's card paints them ({@link MemberPages}), with their clicks and tooltips. */
-    JComponent pagesView(long id) {
-        var areas = new ArrayList<MapView.Control>();
-        var mouse = pagesMouse;
-        JComponent view = new JComponent() {
-            protected void paintComponent(Graphics g) {
-                areas.clear();
-                pages.paint((Graphics2D) g, id, 0, 0, getWidth(), new MapView.Clicks() {
-                    public void add(RoundRectangle2D shape, Runnable action, String tooltip) {
-                        areas.add(new MapView.Control(shape, action, tooltip));
-                    }
+        protected void paintComponent(Graphics graphics) {
+            var g = (Graphics2D) graphics;
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            areas.clear();
+            int height = painter.applyAsInt(g, new MapView.Clicks() {
+                public void add(RoundRectangle2D shape, Runnable action, String tooltip) {
+                    areas.add(new MapView.Control(shape, action, tooltip));
+                }
 
-                    public boolean hovered(RoundRectangle2D shape) {
-                        return mouse[0] != null && shape.contains(mouse[0]);
-                    }
-                }, this::repaint);
+                public boolean hovered(RoundRectangle2D shape) {
+                    return mouse != null && shape.contains(mouse);
+                }
+            });
+            if (height != getPreferredSize().height) {
+                setPreferredSize(new Dimension(getPreferredSize().width, height));
+                revalidate();
             }
+        }
 
-            public String getToolTipText(MouseEvent e) {
-                var at = area(e.getPoint());
-                return at == null ? null : at.tooltip;
-            }
+        public String getToolTipText(MouseEvent e) {
+            var at = area(e.getPoint());
+            return at == null ? null : at.tooltip;
+        }
 
-            MapView.Control area(java.awt.Point p) {
-                return areas.stream().filter(c -> c.shape.contains(p)).findFirst().orElse(null);
-            }
-        };
-        var mice = new MouseAdapter() {
-            public void mouseMoved(MouseEvent e) {
-                mouse[0] = e.getPoint();
-                view.repaint();
-            }
-
-            public void mouseExited(MouseEvent e) {
-                mouse[0] = null;
-                view.repaint();
-            }
-
-            public void mouseReleased(MouseEvent e) {
-                areas.stream().filter(c -> c.shape.contains(e.getPoint())).findFirst().ifPresent(c -> c.action.run());
-            }
-        };
-        view.addMouseListener(mice);
-        view.addMouseMotionListener(mice);
-        ToolTipManager.sharedInstance().registerComponent(view);
-        int width = PANEL_WIDTH - 36;
-        view.setPreferredSize(new Dimension(width, pages.height(width)));
-        view.setAlignmentX(LEFT_ALIGNMENT);
-        return view;
+        MapView.Control area(java.awt.Point p) {
+            return areas.stream().filter(c -> c.shape.contains(p)).findFirst().orElse(null);
+        }
     }
 
     /** A name over a smaller line; with {@code action}, clickable. */

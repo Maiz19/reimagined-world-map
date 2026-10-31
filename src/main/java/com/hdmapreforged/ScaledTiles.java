@@ -14,12 +14,12 @@ import lombok.*;
  * Tiles pre-scaled to their drawn size: smooth scaling every frame was the most expensive part of painting. Swing
  * thread only.
  */
-final class ScaledTiles {
+class ScaledTiles {
     static final long MAX_BYTES = 64L * 1024 * 1024;
     /** Copies made per frame, in pixels (about 3 ms of smooth scaling): after a zoom, all at once took 16-30 ms. */
     static final int FRAME_PIXELS = 1 << 19;
 
-    static final class Entry {
+    static class Entry {
         /** Weak, so a tile the cache dropped is not kept alive here. */
         final WeakReference<BufferedImage> source;
         /** Soft: the JVM drops copies before it runs out of memory; the tile is then drawn from its source, as sharp. */
@@ -54,7 +54,7 @@ final class ScaledTiles {
     }
 
     @RequiredArgsConstructor
-    static final class Wanted {
+    static class Wanted {
         final TileCache.Key key;
         final BufferedImage source;
         final int width, height;

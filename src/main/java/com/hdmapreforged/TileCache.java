@@ -22,7 +22,7 @@ import okhttp3.*;
  * and loads at frame end, so the middle loads first; tiles scrolled away before their turn are dropped.
  */
 @RequiredArgsConstructor
-final class TileCache {
+class TileCache {
     static final int TILE_SIZE = 256, MIN_ZOOM = -3, MAX_ZOOM = 3;
     /** A tile is well under 200 KB. */
     static final int MAX_TILE_BYTES = 2 * 1024 * 1024;
@@ -37,7 +37,7 @@ final class TileCache {
 
     @RequiredArgsConstructor
     @EqualsAndHashCode
-    static final class Key {
+    static class Key {
         final int map, zoom, plane, x, y;
 
         String path() {
@@ -91,6 +91,13 @@ final class TileCache {
     boolean cleanupPending;
     /** Previous version on disk, shown while the new one downloads; each old tile is removed once replaced. */
     volatile String fallbackVersion;
+    /**
+     * The version {@link #upgrade} gave the shown one's folder to, until {@link #setVersion} shows it: a cleanup still
+     * due for the old version keeps that folder. Null when none.
+     */
+    String upgradingTo;
+    /** The tiles that upgrade changed or removed, once it carried the shown version over: the others in memory stay. */
+    Set<String> upgradedGone;
 
     static int tileIndex(double world, int zoom) {
         return (int) Math.floor(world * Math.pow(2, zoom) / TILE_SIZE);
@@ -123,16 +130,26 @@ final class TileCache {
         var gone = new HashSet<>(changed);
         gone.addAll(removed);
         synchronized (missingFile) {
+            synchronized (this) {
+                // From here the folder is {@code to}'s: a cleanup still due for {@code from} must not remove it.
+                upgradingTo = to;
+                upgradedGone = null;
+            }
+            boolean moved = false;
             try {
+                // Renamed first: a tile of {@code from} still downloading is written to a folder of its own, not back
+                // into this one after its changed copy was deleted.
+                old.moveTo(fresh);
+                moved = true;
                 for (String path : gone) {
                     var p = path.split("/");
-                    var tile = p.length == 3 ? old.join(p[0], p[1], p[2]) : null;
+                    var tile = p.length == 3 ? fresh.join(p[0], p[1], p[2]) : null;
                     if (tile != null && tile.isFile()) {
                         diskBytes.addAndGet(-tile.size());
                         tile.delete();
                     }
                 }
-                var missingList = old.joinSegment(MISSING);
+                var missingList = fresh.joinSegment(MISSING);
                 if (missingList.isFile()) {
                     var kept = new StringBuilder();
                     try (BufferedReader in = missingList.openBufferedReader()) {
@@ -141,9 +158,31 @@ final class TileCache {
                     }
                     missingList.write(kept.toString());
                 }
-                old.moveTo(fresh);
+                synchronized (this) {
+                    if (from.equals(version)) {
+                        upgradedGone = gone;
+                    }
+                }
                 return true;
             } catch (IOException | RuntimeException e) {
+                if (moved) {
+                    // Half done: the old version's again, so it stands in while this one downloads.
+                    try {
+                        fresh.moveTo(old);
+                    } catch (IOException | RuntimeException again) {
+                        // A tile of {@code from} downloaded meanwhile made the folder again: the tiles go back into
+                        // it one by one, never deleted with the renamed folder.
+                        moveTilesInto(fresh, old);
+                        var missingList = fresh.joinSegment(MISSING);
+                        try {
+                            if (missingList.isFile() && !old.joinSegment(MISSING).exists()) {
+                                missingList.moveTo(old.joinSegment(MISSING));
+                            }
+                        } catch (IOException | RuntimeException ignored) {
+                        }
+                        deleteTree(fresh);
+                    }
+                }
                 return false;
             }
         }
@@ -161,7 +200,17 @@ final class TileCache {
                 return;
             }
             this.version = version;
+            // After an upgrade the tiles in memory are this version's too, but for those it changed.
+            var kept = version.equals(upgradingTo) && upgradedGone != null ? new LinkedHashMap<>(memory) : null;
+            if (kept != null) {
+                kept.keySet().removeIf(key -> stale.contains(key) || upgradedGone.contains(key.path()));
+            }
+            upgradingTo = null;
+            upgradedGone = null;
             clear();
+            if (kept != null) {
+                memory.putAll(kept);
+            }
             cleanupPending = true;
             fallbackVersion = fallback;
         }
@@ -266,6 +315,11 @@ final class TileCache {
             return image;
         }
         return memory.get(key);
+    }
+
+    /** Whether the map server has no such tile in this version. */
+    synchronized boolean isMissing(Key key) {
+        return missing.contains(key);
     }
 
     /** Queue tiles farthest from the middle first. */
@@ -378,7 +432,7 @@ final class TileCache {
     BufferedImage fromDiskNow(Key key) {
         String current;
         synchronized (this) {
-            current = missing.contains(key) || failed.containsKey(key) ? null : version;
+            current = missing.contains(key) || failed.containsKey(key) || loading.contains(key) ? null : version;
         }
         BufferedImage image = current == null ? null : readCached(file(current, key), under(key));
         if (image != null) {
@@ -501,7 +555,7 @@ final class TileCache {
     }
 
     void finish(Key key, int started, BufferedImage image, boolean notFound, boolean downloaded) {
-        boolean cleanup = false;
+        Runnable cleanup = null;
         synchronized (this) {
             inFlight--;
             if (started != generation) {
@@ -516,7 +570,9 @@ final class TileCache {
                 trim();
                 if (downloaded && cleanupPending) {
                     cleanupPending = false;
-                    cleanup = true;
+                    // Read with the decision: a version switched to right after it waits for a download of its own.
+                    String keep = version, fallback = fallbackVersion;
+                    cleanup = () -> removeOtherVersions(keep, fallback);
                 }
             } else if (notFound) {
                 missing.add(key);
@@ -525,11 +581,11 @@ final class TileCache {
             }
             pump();
         }
-        if (cleanup) {
-            String keep = version, fallback = fallbackVersion;
-            execute(() -> removeOtherVersions(keep, fallback));
+        if (cleanup != null) {
+            execute(cleanup);
         }
-        if (image != null) {
+        // Also on a 404: the stale copy it removed must leave the screen.
+        if (image != null || notFound) {
             onLoaded.run();
         }
     }
@@ -652,38 +708,62 @@ final class TileCache {
     /** Moves tiles of other versions that {@code fallback} lacks into it, then removes those versions. */
     void mergeOlder(String current, String fallback) {
         var into = versionFolder(fallback);
-        for (var dir : versionDirs()) {
+        for (var dir : otherVersionDirs(current)) {
             String name = dir.getFileName();
             if (name.equals(current) || name.equals(fallback) || !MapServer.isSafeVersion(name)) {
                 continue;
             }
-            for (var file : files(dir)) {
-                try {
-                    // Tiles lie in version/map/zoom.
-                    var zoom = file.getParent();
-                    var map = zoom.getParent();
-                    var target = into.join(map.getFileName(), zoom.getFileName(), file.getFileName());
-                    if (dir.equals(map.getParent()) && !target.exists()) {
-                        target.getParent().createDirectories();
-                        file.moveTo(target);
-                    }
-                } catch (IOException | RuntimeException e) {
-                }
-            }
+            moveTilesInto(dir, into);
             deleteTree(dir);
         }
     }
 
+    /** Moves the tiles of version folder {@code dir} that {@code into} lacks into it. */
+    static void moveTilesInto(Filepath dir, Filepath into) {
+        for (var file : files(dir)) {
+            try {
+                // Tiles lie in version/map/zoom.
+                var zoom = file.getParent();
+                var map = zoom.getParent();
+                var target = into.join(map.getFileName(), zoom.getFileName(), file.getFileName());
+                if (dir.equals(map.getParent()) && !target.exists()) {
+                    target.getParent().createDirectories();
+                    file.moveTo(target);
+                }
+            } catch (IOException | RuntimeException e) {
+            }
+        }
+    }
+
     void removeOtherVersions(String keep, String fallback) {
-        for (var dir : versionDirs()) {
+        for (var dir : otherVersionDirs(keep)) {
             if (!dir.getFileName().equals(keep) && !dir.getFileName().equals(fallback)) {
                 deleteTree(dir);
             }
         }
     }
 
+    /**
+     * The version folders but the one {@link #upgrade} gives the shown version's tiles, for a cleanup of {@code shown};
+     * none once another version shows (that one's own cleanup follows). Listed under the upgrade's lock: a folder it
+     * renames is listed only once it is known to be kept.
+     */
+    List<Filepath> otherVersionDirs(String shown) {
+        synchronized (missingFile) {
+            String upgrading;
+            synchronized (this) {
+                if (!shown.equals(version)) {
+                    return List.of();
+                }
+                upgrading = upgradingTo;
+            }
+            return versionDirs().stream().filter(dir -> !dir.getFileName().equals(upgrading))
+                .collect(Collectors.toList());
+        }
+    }
+
     /** Snapshot: the disk may change while trimming. */
-    static final class Entry {
+    static class Entry {
         final Filepath file;
         final long modified, size;
 

@@ -7,7 +7,7 @@ import java.awt.*;
 import java.awt.geom.*;
 
 /** The local player on the map as a yellow target, or an arrow at the view's edge when out of sight. */
-final class PlayerMarker {
+class PlayerMarker {
     static final Color YELLOW = new Color(255, 214, 64), SHADOW = new Color(0, 0, 0, 170);
     static final Font FONT = new Font(Font.SANS_SERIF, Font.BOLD, 11);
 
@@ -33,8 +33,7 @@ final class PlayerMarker {
             g.setColor(pass == 0 ? SHADOW : YELLOW);
             for (int i = 0; i < 4; i++) {
                 double a = PI / 2 * i;
-                g.draw(new Line2D.Double(x + cos(a) * in, y + sin(a) * in, x + cos(a) * out,
-                    y + sin(a) * out));
+                g.draw(new Line2D.Double(x + cos(a) * in, y + sin(a) * in, x + cos(a) * out, y + sin(a) * out));
             }
         }
         g.setColor(otherFloor ? new Color(255, 214, 64, 150) : YELLOW);

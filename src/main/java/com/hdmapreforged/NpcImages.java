@@ -15,7 +15,7 @@ import lombok.*;
  * a row scrolled past before its turn waits until it is painted again. Swing thread.
  */
 @RequiredArgsConstructor
-final class NpcImages {
+class NpcImages {
     /** A row's picture; headers and shopkeepers show {@link #LARGE}. */
     static final int SMALL = SearchResults.PICTURE, LARGE = 2 * SMALL;
     /** The rows of a few screens of both maps' lists, so a list built again has those in view at once. */
@@ -117,7 +117,7 @@ final class NpcImages {
 
     /** An empty square of the picture's size, so the picture comes without a new layout; asks for it once painted. */
     @RequiredArgsConstructor
-    final class Pending implements Icon {
+    class Pending implements Icon {
         final int npc, size;
         boolean asked;
 

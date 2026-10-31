@@ -21,12 +21,6 @@ final class BankDetour {
     /** Joins the name of the teleport or transport that takes one to the bank to what is taken there ("... Castle Wars → Bank: Dramen staff"). */
     static final String TO_BANK = " → Bank: ";
 
-    /** A step's name without {@link #TO_BANK} and what follows: what it is left out of a route by. */
-    static String plain(String name) {
-        int at = name == null ? -1 : name.lastIndexOf(TO_BANK);
-        return at < 0 ? name : name.substring(0, at);
-    }
-
     /** Half ticks to open the bank and take things out. */
     static final int WITHDRAW = 6;
 
@@ -57,8 +51,7 @@ final class BankDetour {
         long limit = Math.min(costLimit, plain.outcome == FOUND ? (long) plain.cost - detour.saves - WITHDRAW
             : Integer.MAX_VALUE);
         Route banked = limit < 0 ? null : detour.route(pathfinder, request, cancelled, (int) limit);
-        boolean better = banked != null && (plain.outcome != FOUND
-            || banked.cost + detour.saves <= plain.cost);
+        boolean better = banked != null && (plain.outcome != FOUND || banked.cost + detour.saves <= plain.cost);
         return better && !cancelled.getAsBoolean() ? banked : plain;
     }
 
@@ -70,7 +63,9 @@ final class BankDetour {
         Route toBank = null;
         int[] stands = null;
         for (int bank : quickest(request)) {
-            Route way = pathfinder.find(request.between(request.start, banks[bank][0]), cancelled, limit);
+            // A bank that cannot beat the nearest so far is given up on early.
+            Route way = pathfinder.find(request.between(request.start, banks[bank][0]), cancelled,
+                toBank == null ? limit : Math.min(limit, toBank.cost));
             if (way.outcome == FOUND && (toBank == null || way.cost < toBank.cost)) {
                 toBank = way;
                 stands = banks[bank];
@@ -99,11 +94,10 @@ final class BankDetour {
         Stream.concat(request.startEdges.stream(), request.edges.stream()).forEach(e -> fromBank.remove(e.name));
         var take = new LinkedHashSet<String>();
         for (var step : on.steps) {
-            String named = step.detail != null && step.detail.startsWith(FROM_BANK)
-                ? step.detail.substring(FROM_BANK.length()) : null;
+            var named = step.said.bank;
             // "items": the game had not named them yet.
-            if (named != null && !named.equals("items")) {
-                take.addAll(Arrays.asList(named.split(", ")));
+            if (named != null && !named.equals(UNNAMED)) {
+                take.addAll(named);
             } else if (named != null || step.isJump() && fromBank.contains(step.name)) {
                 take.add(taken(step));
             }
@@ -112,24 +106,22 @@ final class BankDetour {
             return null;
         }
         var taken = viaPouch(take);
-        String items = String.join(", ", taken);
         var steps = new ArrayList<Route.Step>(toBank.steps);
         // The last teleport or transport on the way names what is taken at the bank (not a staircase or cave).
         for (int i = steps.size() - 1; i >= 0; i--) {
             var s = steps.get(i);
             if (s.name != null && EnumSet.of(Route.Step.Kind.TELEPORT, Route.Step.Kind.TRANSPORT, Route.Step.Kind.SHIP,
                 Route.Step.Kind.HOUSE).contains(s.kind)) {
-                steps.set(i, s.withName(s.name + TO_BANK + items));
+                steps.set(i, s.withSaid(s.said.withTaken(taken)));
                 break;
             }
         }
-        steps.add(new Route.Step(Route.Step.Kind.BANK, new int[]{at, at}, "Bank: " + items, null,
-            WITHDRAW, 0, List.of(), null));
+        steps.add(new Route.Step(Route.Step.Kind.BANK, new int[]{at, at}, "Bank: " + String.join(", ", taken), null,
+            WITHDRAW, new int[0], List.of(), null, Route.Said.NONE.withTaken(taken)));
         for (var s : on.steps) {
             // What the steps name from the bank: the pouch's runes as the pouch, as the bank step does.
-            steps.add(s.detail != null && s.detail.startsWith(FROM_BANK)
-                ? s.withDetail(FROM_BANK + String.join(", ", viaPouch(Arrays.asList(
-                    s.detail.substring(FROM_BANK.length()).split(", "))))) : s);
+            var said = s.said.bank == null ? null : s.said.withBank(viaPouch(s.said.bank));
+            steps.add(said == null ? s : s.withSaid(said).withDetail(said.text()));
         }
         return new Route(FOUND, steps, toBank.cost + WITHDRAW + on.cost, request.target, on.end, false,
             false, toBank.nodes + on.nodes).withViaWild(toBank.viaWild || on.viaWild)
@@ -137,7 +129,7 @@ final class BankDetour {
     }
 
     /** What is taken: runes the pouch holds enough of (a combination rune in it counts as its two) as "Rune pouch". */
-    Set<String> viaPouch(Collection<String> take) {
+    List<String> viaPouch(Collection<String> take) {
         var held = new HashMap<String, Long>();
         pouch.forEach((name, n) -> {
             if (name == null) {
@@ -145,7 +137,7 @@ final class BankDetour {
             }
             String lower = name.toLowerCase(Locale.ROOT);
             held.merge(lower, n, Long::sum);
-            for (var c : COMBINED.get()) {
+            for (var c : RouteFiles.tables().combined) {
                 if (lower.equals(c[0] + " rune")) {
                     held.merge(c[1] + " rune", n, Long::sum);
                     held.merge(c[2] + " rune", n, Long::sum);
@@ -157,12 +149,11 @@ final class BankDetour {
             var m = AMOUNT.matcher(t);
             taken.add(m.matches() && enough(m, held) ? "Rune pouch" : t);
         }
-        return taken;
+        return List.copyOf(taken);
     }
 
-    /** Combination runes and the two runes each holds (list "combination runes"). */
-    static final RouteFiles.Table<String[][]> COMBINED = new RouteFiles.Table<>(() -> Pathfinder.list(
-        "combination runes", r -> r.split(" ")).stream().filter(c -> c.length > 2).toArray(String[][]::new));
+    /** What a step needs from the bank when the game had not named its items yet. */
+    static final List<String> UNNAMED = List.of("items");
 
     /** An item as a bank step names it: "3 × Air rune", or "Dramen staff" (one). */
     static final Pattern AMOUNT = Pattern.compile("(?:(\\d+) × )?(.+)");

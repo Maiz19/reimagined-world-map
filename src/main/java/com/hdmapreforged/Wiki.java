@@ -3,7 +3,7 @@ package com.hdmapreforged;
 import okhttp3.*;
 
 /** Links that open an OSRS Wiki page in the browser on a click; the plugin never fetches anything from the wiki. */
-final class Wiki {
+class Wiki {
     static final String WIKI = "https://oldschool.runescape.wiki";
 
     static String pageUrl(String title) {

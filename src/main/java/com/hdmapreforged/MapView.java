@@ -32,18 +32,17 @@ import com.hdmapreforged.TileCache.Key;
 import net.runelite.api.coords.*;
 
 /** The map: tiles, icons, transport lines and the player. x grows east, y north, one unit per tile; zoom is log2 pixels per tile. */
+@Getter
 @Accessors(fluent = true)
-final class MapView extends JComponent implements Projection {
+class MapView extends JComponent {
     interface Listener {
         void selectionChanged(Poi poi);
-
-        void viewChanged();
 
         void nearestRequested(WorldPoint point);
     }
 
     interface Overlay {
-        void paint(Graphics2D g, Projection projection);
+        void paint(Graphics2D g, MapView projection);
     }
 
     interface Widget {
@@ -62,19 +61,19 @@ final class MapView extends JComponent implements Projection {
 
     /** Clickable icons drawn by others (the game's); asked only when none of ours is under the mouse. */
     interface HitLayer {
-        Poi hit(Point point, Projection projection);
+        Poi hit(Point point, MapView projection);
 
-        default Point2D labelAnchor(Poi poi, Projection projection) {
+        default Point2D labelAnchor(Poi poi, MapView projection) {
             return null;
         }
 
-        default Point2D iconCenter(Poi poi, Projection projection) {
+        default Point2D iconCenter(Poi poi, MapView projection) {
             return null;
         }
     }
 
     @RequiredArgsConstructor
-    static final class Control {
+    static class Control {
         final RoundRectangle2D shape;
         final Runnable action;
         final String tooltip;
@@ -103,10 +102,8 @@ final class MapView extends JComponent implements Projection {
     static final Font REGION_FONT = new Font(SERIF, BOLD, 17);
     static final Color WILDERNESS_TEXT = new Color(255, 190, 180), WILDERNESS_STRONG = new Color(255, 70, 50, 210);
     static final Color WILDERNESS_FAINT = new Color(255, 70, 50, 130);
-    static final BasicStroke WILDERNESS_LINE = new BasicStroke(2f, CAP_BUTT, JOIN_MITER, 10f,
-        null, 0f);
-    static final BasicStroke WILDERNESS_DASHED = new BasicStroke(1f, CAP_BUTT, JOIN_MITER,
-        10f, new float[]{5f, 4f}, 0f);
+    static final BasicStroke WILDERNESS_LINE = new BasicStroke(2f, CAP_BUTT, JOIN_MITER);
+    static final BasicStroke WILDERNESS_DASHED = new BasicStroke(1f, CAP_BUTT, JOIN_MITER, 10f, new float[]{5f, 4f}, 0f);
     static final Color REGION_COLOR = new Color(255, 236, 190);
     /** The game's own colour of its oceans' names; its seas' are lighter here, unlike towns'. */
     static final Color OCEAN_COLOR = new Color(0x1de0e0), SEA_COLOR = new Color(170, 225, 240);
@@ -114,10 +111,9 @@ final class MapView extends JComponent implements Projection {
     static final Color FLOOR_COLOR = new Color(0xffff00);
     /** The game's small places ("Altar" in the Ourania Cave), in the game's small size. */
     static final Font SMALL_PLACE_FONT = new Font(SANS_SERIF, PLAIN, 11);
-    static final int[] WILDERNESS_STARTS = {3520, 9920};
 
     @RequiredArgsConstructor
-    static final class Drawn {
+    static class Drawn {
         final Poi poi;
         final double x, y, radius;
     }
@@ -126,27 +122,17 @@ final class MapView extends JComponent implements Projection {
     final MapConfig config;
     Listener listener;
 
-    @Getter
     BaseMaps maps;
-    @Getter
     BaseMap map;
-    @Getter
     int plane;
     /** Volatile: the route's extras thread reads them while Swing sets them. */
-    @Getter
     volatile List<Poi> pois = List.of();
     Set<Poi> hidden = Set.of();
-    @Getter
     List<Poi> searchExtras = List.of();
-    @Getter
     List<MapData.Place> labels = List.of();
-    @Getter
     volatile Unlocks unlocks;
-    @Getter
     Poi selected;
-    @Getter
     Poi hovered;
-    @Getter
     WorldPoint player;
     WorldPoint outside;
     /** The player is in a house, shown where it stands. */
@@ -156,22 +142,31 @@ final class MapView extends JComponent implements Projection {
     WorldPoint memberAt;
 
     double centerX = 3222, centerY = 3218;
-    @Getter
+    /** The camera's turn (radians, clockwise), to which the map turns while it follows the player. */
+    double turn;
     double zoom = 1;
     double targetX = centerX, targetY = centerY;
-    @Getter
     double targetZoom = zoom;
     Point anchorScreen;
     Point2D anchorWorld;
     static final int STEP_MS = 15;
     final Timer animator = new Timer(STEP_MS, e -> step());
+    /**
+     * While the camera turns the map its picture is turned the fast way (nearest neighbour), and smoothed once the turn
+     * has stood still a moment.
+     */
+    boolean turning;
+    final Timer turnStill = new Timer(150, e -> {
+        turning = false;
+        repaint();
+    });
     long lastStep;
     /** The animator's step repaints. */
     boolean stepping;
 
     List<Drawn> drawn = new ArrayList<>();
-    /** Opens the map picker at a point; null without the map's own controls. */
-    Consumer<Point> chrome;
+    /** Opens the map picker at a point. */
+    Consumer<Point> chrome = at -> { };
     List<Control> controls = new ArrayList<>();
     final List<Widget> widgets = new CopyOnWriteArrayList<>();
     /** Kinds whose destination lines are hidden. */
@@ -191,14 +186,12 @@ final class MapView extends JComponent implements Projection {
     final List<Overlay> overlays = new ArrayList<>();
     final ScaledTiles scaled = new ScaledTiles();
     /** Which of our icons the game's own icon stands for (drawn by IconLayer), so no badge is drawn; once a frame. */
-    Function<Projection, Predicate<Poi>> badgeCover;
+    Function<MapView, Predicate<Poi>> badgeCover;
     /** The window over the game, when this is its map. */
     BigWindow windowControls;
     final TextSprites text = new TextSprites();
     final List<MenuContributor> menus = new ArrayList<>();
     final List<HitLayer> hitLayers = new ArrayList<>();
-    @Getter
-    final Projection projection = this;
 
     public int width() {
         return getWidth();
@@ -223,14 +216,12 @@ final class MapView extends JComponent implements Projection {
         if (HousePlan.contains(drawn.getX() - DRAWN_X + X, drawn.getY() - DRAWN_Y + Y)) {
             return drawn.dx(X - DRAWN_X).dy(Y - DRAWN_Y);
         }
-        var game = map.id == FULL ? fromDrawnAnywhere(drawn)
-            : WorldMapMoves.toWorld(map.id, drawn);
+        var game = map.id == FULL ? fromDrawnAnywhere(drawn) : WorldMapMoves.toWorld(map.id, drawn);
         // Ground the map draws on another floor than it is walked on (the region table's floor lines): that floor.
         return maps == null ? game : maps.gameFloor(map, game, drawn.getPlane(), ground);
     }
 
     /** Whether a game point is ground one stands on (the route data's), to tell which floor a click on the map means. */
-    @Getter
     volatile Predicate<WorldPoint> ground;
 
     public WorldPoint shown(WorldPoint game) {
@@ -244,14 +235,8 @@ final class MapView extends JComponent implements Projection {
         if (HousePlan.contains(game.getX(), game.getY())) {
             return game.dx(DRAWN_X - X).dy(DRAWN_Y - Y);
         }
-        WorldPoint drawn;
-        if (on.id == FULL) {
-            var moved = WorldMapMoves.drawn(game);
-            drawn = moved != null ? moved.point : game;
-        } else {
-            var moved = toDrawn(on.id, game);
-            drawn = moved != null ? moved : game;
-        }
+        var moved = on.id == FULL ? WorldMapMoves.drawn(game) : null;
+        var drawn = moved != null ? moved.point : on.id == FULL ? game : Objects.requireNonNullElse(toDrawn(on.id, game), game);
         // Ground the map draws on another floor than it is walked on (the region table's floor lines).
         int floor = on.maps == null ? -1 : on.maps.drawnFloor(on, game);
         return floor < 0 || floor == drawn.getPlane() ? drawn : new WorldPoint(drawn.getX(), drawn.getY(), floor);
@@ -281,8 +266,7 @@ final class MapView extends JComponent implements Projection {
                     pressed = null;
                     return;
                 }
-                pressed = e.getPoint();
-                lastDrag = e.getPoint();
+                pressed = lastDrag = e.getPoint();
                 dragging = false;
                 if (e.isPopupTrigger()) {
                     showContextMenu(e);
@@ -329,7 +313,7 @@ final class MapView extends JComponent implements Projection {
                     goBack();
                 } else if (!dragging && pressed != null && e.getButton() == MouseEvent.BUTTON1) {
                     Poi hit;
-                    if (clickCatcher.test(e.getPoint(), projection)) {
+                    if (clickCatcher.test(unturn(e.getPoint()), MapView.this)) {
                         repaint();
                     } else if ((hit = iconAt(e.getPoint())) != null || e.getClickCount() < 2) {
                         var inside = mapBelow(hit);
@@ -442,16 +426,11 @@ final class MapView extends JComponent implements Projection {
 
     /** Of a stack, the picture of the first whose kind shows; 0 none. */
     int picture(Poi poi) {
-        for (var member : poi.members()) {
-            if (!iconsOff.contains(member.toggle())) {
-                return member.picture;
-            }
-        }
-        return 0;
+        return poi.members().stream().filter(m -> !iconsOff.contains(m.toggle())).mapToInt(m -> m.picture).findFirst().orElse(0);
     }
 
     /** Takes a left click before the icons do (the party's markers); true when used. */
-    BiPredicate<Point, Projection> clickCatcher = (at, projection) -> false;
+    BiPredicate<Point, MapView> clickCatcher = (at, projection) -> false;
 
     void addWidget(Widget widget) {
         widgets.add(widget);
@@ -515,7 +494,17 @@ final class MapView extends JComponent implements Projection {
     }
 
     boolean usable(Poi poi, boolean onlyUsable) {
-        return poi.members().stream().anyMatch(member -> !onlyUsable || unlocks == null || unlocks.usable(member.needs));
+        var known = unlocks;
+        if (!onlyUsable || known == null) {
+            return true;
+        }
+        // A loop, not a stream: asked for every game icon in view each frame.
+        for (var member : poi.members()) {
+            if (known.usable(member.needs)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Gets the game's sign for what one cannot use: a shortcut, mooring or resource whose needs are certainly unmet. */
@@ -538,13 +527,11 @@ final class MapView extends JComponent implements Projection {
         if (following && player != null) {
             follow();
         }
-        fireViewChanged();
     }
 
     void setPlane(int plane) {
         this.plane = max(0, min(3, plane));
         repaint();
-        fireViewChanged();
     }
 
     /** A floor the user chose: off the character's floor, following would take the view back at their next step. */
@@ -560,11 +547,10 @@ final class MapView extends JComponent implements Projection {
         boolean changed = map != this.map;
         this.map = map;
         if (focus != null) {
-            plane = focus.getPlane();
+            plane = max(0, min(3, focus.getPlane()));
         }
         jumpOrAnimate(changed, focus != null ? focus.getX() + 0.5 : map.centerX, focus != null ? focus.getY() + 0.5
             : map.centerY, zoomLevel);
-        fireViewChanged();
     }
 
     void focus(Poi poi) {
@@ -613,7 +599,6 @@ final class MapView extends JComponent implements Projection {
         focus(memberAt = member.get());
         this.member = member;
         following = true;
-        fireViewChanged();
     }
 
     /** To where the member followed is now. Swing thread. */
@@ -679,7 +664,6 @@ final class MapView extends JComponent implements Projection {
         jumpOrAnimate(true, at.getX() + 0.5, at.getY() + 0.5, playerZoom());
         following = true;
         member = null;
-        fireViewChanged();
     }
 
     void follow() {
@@ -691,15 +675,81 @@ final class MapView extends JComponent implements Projection {
             return;
         }
         var at = shown(who);
-        if (plane != at.getPlane()) {
-            plane = at.getPlane();
-            fireViewChanged();
-        }
+        plane = at.getPlane();
         animateTo(at.getX() + 0.5, at.getY() + 0.5, targetZoom);
     }
 
     double scale() {
         return pow(2, zoom);
+    }
+
+    /** Turned with the camera: only on the player, so dragging the map away puts north up again. */
+    boolean turned() {
+        return config.turnWithCamera() && following && member == null && player != null && turn != 0;
+    }
+
+    void setTurn(double turn) {
+        boolean was = turned(), changed = turn != this.turn;
+        this.turn = turn;
+        if (was || turned()) {
+            if (changed) {
+                turning = true;
+                turnStill.setRepeats(false);
+                turnStill.restart();
+            }
+            repaint();
+        }
+    }
+
+    public double margin() {
+        return turned() ? (hypot(getWidth(), getHeight()) - min(getWidth(), getHeight())) / 2 : 0;
+    }
+
+    /** Where a spot of the screen lies on the map as painted unturned. */
+    Point unturn(Point p) {
+        if (!turned()) {
+            return p;
+        }
+        double cx = getWidth() / 2.0, cy = getHeight() / 2.0, sin = sin(-turn), cos = cos(-turn);
+        return new Point((int) round(cx + (p.x - cx) * cos - (p.y - cy) * sin),
+            (int) round(cy + (p.x - cx) * sin + (p.y - cy) * cos));
+    }
+
+    /** Where a spot of the map as painted unturned shows on the screen: what is drawn over the map turns with it. */
+    Point2D asTurned(double x, double y) {
+        if (!turned()) {
+            return new Point2D.Double(x, y);
+        }
+        double cx = getWidth() / 2.0, cy = getHeight() / 2.0, sin = sin(turn), cos = cos(turn);
+        return new Point2D.Double(cx + (x - cx) * cos - (y - cy) * sin, cy + (x - cx) * sin + (y - cy) * cos);
+    }
+
+    /**
+     * Turns {@code g} back round a spot of the turned map, so what is drawn there next stays upright: the transform to
+     * put back, null when {@code g} is not turned. Set exactly upright: turned back by a rotation a trace of the turn
+     * stayed (1e-16), so text and icons were drawn as turned pictures, their pixels jumping as the camera turned. On whole
+     * pixels at the screen's own scale too: a scale of 0.9999999999999999 and half pixels had every icon resampled each
+     * frame (the fast way while turning), rows of its pixels dropped or doubled, so icons jumped and looked lighter.
+     */
+    static AffineTransform upright(Graphics2D g, double x, double y) {
+        var before = g.getTransform();
+        if (before.getShearX() == 0 && before.getShearY() == 0 && before.getScaleX() > 0 && before.getScaleY() > 0) {
+            return null;
+        }
+        double sx = rint(hypot(before.getScaleX(), before.getShearY()) * 1000) / 1000;
+        double sy = rint(hypot(before.getShearX(), before.getScaleY()) * 1000) / 1000;
+        var at = before.transform(new Point2D.Double(x, y), null);
+        g.setTransform(new AffineTransform(sx, 0, 0, sy, rint(at.getX() - sx * x), rint(at.getY() - sy * y)));
+        return before;
+    }
+
+    /** Draws upright round a spot of the turned map ({@link #upright(Graphics2D, double, double)}), then turns back. */
+    static void upright(Graphics2D g, double x, double y, Runnable draw) {
+        var back = upright(g, x, y);
+        draw.run();
+        if (back != null) {
+            g.setTransform(back);
+        }
     }
 
     public double screenX(double worldX) {
@@ -711,6 +761,7 @@ final class MapView extends JComponent implements Projection {
     }
 
     Point2D toWorld(Point p) {
+        p = unturn(p);
         double scale = scale();
         return new Point2D.Double(centerX + (p.x - getWidth() / 2.0) / scale, centerY - (p.y - getHeight() / 2.0) / scale);
     }
@@ -753,12 +804,11 @@ final class MapView extends JComponent implements Projection {
         if (next == targetZoom) {
             return;
         }
-        anchorScreen = at;
+        anchorScreen = unturn(at);
         anchorWorld = toWorld(at);
         targetZoom = next;
         moving = true;
         animator.start();
-        fireViewChanged();
     }
 
     double clampZoom(double z) {
@@ -862,16 +912,20 @@ final class MapView extends JComponent implements Projection {
         toastTimer.stop();
         scaled.clear();
         shownCache.clear();
-    }
-
-    void fireViewChanged() {
-        if (listener != null) {
-            listener.viewChanged();
+        if (turnedTiles != null) {
+            turnedTiles.flush();
+            turnedTiles = null;
         }
     }
 
     protected void paintComponent(Graphics graphics) {
         var g = (Graphics2D) graphics.create();
+        // Drawn from a centre on whole screen pixels, so all of the map moves by the same whole pixels: the tiles are
+        // placed rounded down and the icons rounded to the nearest, and from a centre between pixels the icons came a
+        // frame after the tiles while the map followed a walking player.
+        double realX = centerX, realY = centerY, scale = scale();
+        centerX = rint(centerX * scale) / scale;
+        centerY = rint(centerY * scale) / scale;
         try {
             g.setColor(BACKGROUND);
             g.fillRect(0, 0, getWidth(), getHeight());
@@ -880,7 +934,15 @@ final class MapView extends JComponent implements Projection {
                 return;
             }
             filter = new Filter();
-            paintTiles(g);
+            // The map turned with the camera; the controls drawn after it are not.
+            var screen = g;
+            g = (Graphics2D) g.create();
+            if (turned()) {
+                g.rotate(turn, getWidth() / 2.0, getHeight() / 2.0);
+                paintTurned(g);
+            } else {
+                paintTiles(g);
+            }
             g.setRenderingHint(KEY_ANTIALIASING, VALUE_ANTIALIAS_ON);
             g.setRenderingHint(KEY_STROKE_CONTROL, VALUE_STROKE_PURE);
             g.setRenderingHint(KEY_TEXT_ANTIALIASING, VALUE_TEXT_ANTIALIAS_ON);
@@ -895,7 +957,7 @@ final class MapView extends JComponent implements Projection {
             for (Overlay overlay : new ArrayList<>(overlays)) {
                 var layer = (Graphics2D) g.create();
                 try {
-                    overlay.paint(layer, projection);
+                    overlay.paint(layer, this);
                 } finally {
                     layer.dispose();
                 }
@@ -908,15 +970,69 @@ final class MapView extends JComponent implements Projection {
             if (selected != null && selected.isOn(map)) {
                 paintLabel(g, selected);
             }
+            g.dispose();
+            g = screen;
             paintControls(g);
         } finally {
             g.dispose();
+            centerX = realX;
+            centerY = realY;
+        }
+    }
+
+    /**
+     * The tiles of a turned map: drawn unturned into a picture reaching the turned view's corners, which is turned as one,
+     * and while only the turn changes not drawn again. Each tile turned and smoothed on its own was most of a turning
+     * frame. Smoothed when the turn stands still.
+     */
+    void paintTurned(Graphics2D g) {
+        var transform = g.getTransform();
+        // Rounded: read off a turned transform it differed in its last digits at each turn, and the picture was drawn
+        // again at every step of a turn.
+        double device = round(hypot(transform.getScaleX(), transform.getShearY()) * 100) / 100.0;
+        int w = getWidth(), h = getHeight(), side = (int) ceil(hypot(w, h)) + 2, pixels = (int) ceil(side * device);
+        // Whole pixels: half a pixel off (an odd width), the screen's memory left lines of background between the tiles.
+        int ox = (side - w) / 2, oy = (side - h) / 2;
+        var key = Arrays.<Object>asList(map, plane, centerX, centerY, zoom, w, h, device, tiles.version);
+        // In the screen's own memory (the tiles drawn there as fast as on the screen): drawn in Java's memory, drawing it
+        // again while the map follows a walking player took 25 ms a frame.
+        var screenConfig = getGraphicsConfiguration();
+        int state = turnedTiles == null || screenConfig == null ? VolatileImage.IMAGE_OK
+            : turnedTiles.validate(screenConfig);
+        if (turnedTiles != null && (turnedTiles.getWidth() != pixels || state == VolatileImage.IMAGE_INCOMPATIBLE)) {
+            turnedTiles.flush();
+            turnedTiles = null;
+        }
+        boolean fresh = turnedTiles == null;
+        if (fresh && screenConfig != null) {
+            turnedTiles = screenConfig.createCompatibleVolatileImage(pixels, pixels);
+        }
+        if (turnedTiles == null) {
+            paintTiles(g);
+            return;
+        }
+        if (fresh || state == VolatileImage.IMAGE_RESTORED || !whole || !key.equals(turnedFor)) {
+            var picture = turnedTiles.createGraphics();
+            picture.setColor(BACKGROUND);
+            picture.fillRect(0, 0, pixels, pixels);
+            picture.scale(device, device);
+            picture.translate(ox, oy);
+            paintTiles(picture);
+            picture.dispose();
+            turnedFor = key;
+        }
+        g.setRenderingHint(KEY_INTERPOLATION, turning || moving ? VALUE_INTERPOLATION_NEAREST_NEIGHBOR
+            : VALUE_INTERPOLATION_BILINEAR);
+        g.drawImage(turnedTiles, new AffineTransform(1 / device, 0, 0, 1 / device, -ox, -oy), null);
+        if (turnedTiles.contentsLost()) {
+            turnedFor = null;
+            repaint();
         }
     }
 
     /** {x0, x1, y0, y1}: the tiles of a level in a view centred on a world point, {@code scale} pixels a game tile. */
     int[] tilesInView(int level, double x, double y, double scale) {
-        double w = getWidth() / 2.0 / scale, h = getHeight() / 2.0 / scale;
+        double w = (getWidth() / 2.0 + margin()) / scale, h = (getHeight() / 2.0 + margin()) / scale;
         // Another map's tiles draw beyond the bounds: cut at the edges of the tiles of zoom 1, not at those of the level
         // drawn, or each zoom would end it at another line (Dorgesh-Kaan South Dungeon's agility course).
         int edge = map.tiles != map.id ? (int) worldPerTile(1) : 1;
@@ -950,6 +1066,7 @@ final class MapView extends JComponent implements Projection {
 
     void paintTiles(Graphics2D g) {
         if (tiles.version == null) {
+            whole = false;
             notice(g, "Loading map…", getHeight() / 2);
             return;
         }
@@ -988,6 +1105,7 @@ final class MapView extends JComponent implements Projection {
         int diskNow = drawnTiles == 0 ? 24 : 0;
         long diskUntil = nanoTime() + 60_000_000L;
         drawnTiles = 0;
+        whole = end == null && zoom == targetZoom && !moving;
         scaled.beginFrame(need(visible));
         boolean settled = zoom == targetZoom;
         // Past the most detailed tiles, crisp squares: smoothing blurred them and cost a copy of each.
@@ -995,7 +1113,9 @@ final class MapView extends JComponent implements Projection {
         // Smooth scaling is costly on large windows and invisible while moving.
         g.setRenderingHint(KEY_INTERPOLATION, moving || !smooth
             ? VALUE_INTERPOLATION_NEAREST_NEIGHBOR : VALUE_INTERPOLATION_BILINEAR);
-        for (var t : middleLast(range)) {
+        var order = middleLast(range);
+        for (int i = 0; i < order.size(); i++) {
+            var t = order.get(i);
             int tx = t[0], ty = t[1], left = (int) floor(screenX(tx * span));
             int right = (int) floor(screenX((tx + 1) * span)), top = (int) floor(screenY((ty + 1) * span));
             int bottom = (int) floor(screenY(ty * span));
@@ -1003,11 +1123,15 @@ final class MapView extends JComponent implements Projection {
                 paintGroundBelow(g, level, tx, ty, left, top, right, bottom, settled, smooth);
             }
             var key = new Key(map.tiles, level, plane, tx, ty);
-            BufferedImage image = passing ? tiles.peek(key) : tiles.get(key);
-            if (image == null && diskNow > 0 && nanoTime() < diskUntil) {
+            // Read before it is asked for, so no io thread reads it too; the middle's, which come last.
+            if (diskNow > 0 && i >= order.size() - 24 && nanoTime() < diskUntil && tiles.peek(key) == null) {
                 diskNow--;
-                image = tiles.fromDiskNow(key);
+                tiles.fromDiskNow(key);
             }
+            BufferedImage image = passing ? tiles.peek(key) : tiles.get(key);
+            // A tile the server has none of (the sea, void around a map) never comes: else a turned map drew its picture
+            // again every frame.
+            whole &= image != null || tiles.isMissing(key);
             if (image != null) {
                 drawnTiles++;
                 scaled.draw(g, key, image, 0, 0, TILE_SIZE, left, top, right - left, bottom - top, settled, smooth);
@@ -1033,6 +1157,7 @@ final class MapView extends JComponent implements Projection {
         tiles.endFrame();
         // Scaled copies are made a few a frame, so the end of a zoom has no hitch: paint again until all are there.
         if (scaled.endFrame()) {
+            whole = false;
             repaint();
         }
     }
@@ -1058,14 +1183,12 @@ final class MapView extends JComponent implements Projection {
     static final int UNDERGROUND_Y = 4800;
 
     /** True when a coarser or finer tile stood in. */
-    boolean paintFallback(Graphics2D g, Key key, int left, int top, int right, int bottom, boolean settled,
-        boolean smooth) {
+    boolean paintFallback(Graphics2D g, Key key, int left, int top, int right, int bottom, boolean settled, boolean smooth) {
         int level = key.zoom, tx = key.x, ty = key.y;
         boolean drawn = false;
         int standInLevel = passing ? max(TileCache.MIN_ZOOM, min(endLevel, level - 2)) : level - 2;
         int span = 1 << (level - standInLevel);
-        var standIn = new Key(map.tiles, standInLevel, plane, floorDiv(tx, span),
-            floorDiv(ty, span));
+        var standIn = new Key(map.tiles, standInLevel, plane, floorDiv(tx, span), floorDiv(ty, span));
         if (standInLevel >= TileCache.MIN_ZOOM) {
             standIns.add(standIn);
         }
@@ -1106,6 +1229,11 @@ final class MapView extends JComponent implements Projection {
 
     final LinkedHashSet<Key> standIns = new LinkedHashSet<>();
     int drawnTiles;
+    /** The last tiles drawn are all there as they will stay: no stand-in, no copy still to smooth, not moving. */
+    boolean whole;
+    /** The turned map's tiles, unturned, and what they were drawn for ({@link #paintTurned}). */
+    VolatileImage turnedTiles;
+    List<Object> turnedFor;
     /** Zooming out, the level the zoom ends on: its tiles stand in for those of the levels passed. */
     int endLevel;
     /** Zooming out through this frame's level: its tiles are drawn only from memory. */
@@ -1117,7 +1245,7 @@ final class MapView extends JComponent implements Projection {
     Filter filter;
 
     /** Which layers show at the zoom and the icon settings, read once per frame rather than per icon. */
-    final class Filter {
+    class Filter {
         final boolean[] layers = new boolean[LAYERS.length];
         final boolean shortcuts, onlyUsable = config.onlyUsable(), markLocked = config.markLocked();
         final boolean questStatus = config.questStatus(), hideCompleted = config.hideCompletedQuests();
@@ -1148,14 +1276,13 @@ final class MapView extends JComponent implements Projection {
             return;
         }
         var from = shown(selected.drawn());
-        var icon = fromLayers(layer -> layer.iconCenter(selected, projection));
+        var icon = fromLayers(layer -> layer.iconCenter(selected, this));
         double sx = icon != null ? icon.getX() : screenX(from.getX() + 0.5);
         double sy = icon != null ? icon.getY() : screenY(from.getY() + 0.5);
         Color color = selected.type.color;
         var links = selected.links();
         float width = links.size() > 12 ? 1.6f : 2.4f;
-        var usableLines = new Path2D.Double();
-        var lockedLines = new Path2D.Double();
+        Path2D usableLines = new Path2D.Double(), lockedLines = new Path2D.Double();
         var ends = new ArrayList<double[]>();
         for (var link : links) {
             boolean usable = unlocks == null || unlocks.usable(link.needs);
@@ -1241,7 +1368,7 @@ final class MapView extends JComponent implements Projection {
         double step = floor(targetZoom * 2) / 2;
         double cellWorld = iconSize(step) * (step < -1 ? 1.5 : step < 1 ? 1.15 : 0.9) / pow(2, step);
         occupied.clear();
-        Predicate<Poi> covered = badgeCover != null ? badgeCover.apply(projection) : poi -> false;
+        Predicate<Poi> covered = badgeCover != null ? badgeCover.apply(this) : poi -> false;
         var frame = new ArrayList<Drawn>();
         var last = new ArrayList<Poi>();
         Composite normal = g.getComposite();
@@ -1249,13 +1376,21 @@ final class MapView extends JComponent implements Projection {
         double scale = scale();
         // Farther out of view an icon shares no cell with one in it: skipped before anything else.
         double reach = size + cellWorld * scale;
-        for (var poi : candidates()) {
+        var shown = candidates();
+        // A hovered icon the filter hides (a game icon's place) is added here, not in the candidates: a hover would
+        // make those anew over every place.
+        if (hovered != null && !hidden.contains(hovered) && hovered.isOn(map) && shownCached(hovered) != null
+            && !shown.contains(hovered)) {
+            shown = new ArrayList<>(shown);
+            shown.add(hovered);
+        }
+        for (var poi : shown) {
             var at = shownCached(poi);
             double x = w / 2.0 + (at.getX() + 0.5 - centerX) * scale, y = h / 2.0 - (at.getY() + 0.5 - centerY) * scale;
             if (x < -reach || y < -reach || x > w + reach || y > h + reach) {
                 continue;
             }
-            boolean special = poi == selected || poi == hovered || inGroup(poi);
+            boolean special = poi == selected || poi == hovered || inGroup(poi) || poi == grave;
             // Every icon claims its cell, even hovered or just out of view, so no neighbour pops up in its place.
             boolean free = occupied.add(cellKey(at.getX() + 0.5, at.getY() + 0.5, cellWorld));
             // Where the game's icon is drawn, that acts as this one: no second icon on top, also when selected.
@@ -1263,9 +1398,10 @@ final class MapView extends JComponent implements Projection {
                 continue;
             }
             if (special) {
-                last.add(poi);
+                // The grave under the other emphasised icons.
+                last.add(poi == grave ? 0 : last.size(), poi);
             } else if (free) {
-                g.setComposite(at.getPlane() == plane ? normal : AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.55f));
+                g.setComposite(at.getPlane() == plane ? normal : FADED);
                 PoiIcons.paintCached(g, poi.type, picture(poi), x, y, pixel, 0, locked(poi));
                 frame.add(new Drawn(poi, x, y, pixel / 2 + 2));
             }
@@ -1275,19 +1411,23 @@ final class MapView extends JComponent implements Projection {
         drawn = frame;
     }
 
-    /** The places a frame may draw (not hidden, on this map and floor, shown by the filter, or selected, hovered or of the
+    /** The places a frame may draw (not hidden, on this map and floor, shown by the filter, or selected or of the
      * selected's group), once per change of those rather than for every place every frame. */
     List<Poi> candidates = List.of();
     List<Object> candidatesFor;
 
     List<Poi> candidates() {
-        var key = Arrays.asList(pois, hidden, unlocks, iconsOff, map, plane, targetZoom, filter.onlyUsable, selected, hovered);
+        var on = mapOf(graveAt);
+        if (grave == null || grave.map != on) {
+            grave = on == null ? null : new Poi(GRAVE, "Your grave", graveAt, on, null, Needs.NONE, "Grave", null, null);
+        }
+        var key = Arrays.asList(pois, hidden, unlocks, iconsOff, map, plane, targetZoom, filter.onlyUsable, selected, grave);
         if (!key.equals(candidatesFor)) {
             candidatesFor = key;
             candidates = new ArrayList<>();
             for (var poi : pois) {
                 var at = hidden.contains(poi) && poi != selected || !poi.isOn(map) ? null : shownCached(poi);
-                if (at != null && (poi == selected || poi == hovered || inGroup(poi)
+                if (at != null && (poi == selected || inGroup(poi)
                     // Other floors' icons show (faded) above ground when zoomed in, and where the game's map draws a
                     // place's floors flat (Keldagrim's houses); elsewhere underground, floors on one spot are different
                     // places. Further out they crowd the floor in view.
@@ -1296,8 +1436,27 @@ final class MapView extends JComponent implements Projection {
                     candidates.add(poi);
                 }
             }
+            // Whatever the filters and the Icons panel hide, on any floor.
+            if (grave != null && grave.isOn(map)) {
+                candidates.add(grave);
+            }
         }
         return candidates;
+    }
+
+    /** One's grave while it stands (else null), and its place made once the map list knows its map, again for a new list. */
+    WorldPoint graveAt;
+    Poi grave;
+
+    void setGrave(WorldPoint at) {
+        if (!Objects.equals(at, graveAt)) {
+            if (grave != null && selected == grave) {
+                select(null);
+            }
+            graveAt = at;
+            grave = null;
+            repaint();
+        }
     }
 
     /** The selected, hovered and group icons, in a second pass over the overlays (the game's icons) so none covers them. */
@@ -1308,12 +1467,16 @@ final class MapView extends JComponent implements Projection {
         for (var poi : special) {
             var at = shownCached(poi);
             double x = screenX(at.getX() + 0.5), y = screenY(at.getY() + 0.5);
-            PoiIcons.paintCached(g, poi.type, picture(poi), x, y, pixel, poi == selected ? 1 : 2, locked(poi));
-            drawn.add(new Drawn(poi, x, y, pixel / 2 + 2));
+            double size = poi != grave ? pixel : iconSize(zoom) * (poi == selected ? 1.25 : 1.1);
+            int state = poi == selected ? 1 : poi == grave ? 0 : 2;
+            PoiIcons.paintCached(g, poi.type, picture(poi), x, y, size, state, locked(poi));
+            drawn.add(new Drawn(poi, x, y, size / 2 + 2));
         }
     }
 
     final Set<Long> occupied = new HashSet<>();
+    /** Icons of other floors: one instance, so a run of them keeps the composite set. */
+    static final Composite FADED = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.55f);
     final Map<Poi, WorldPoint> shownCache = new IdentityHashMap<>();
     BaseMap shownCacheMap;
 
@@ -1322,12 +1485,7 @@ final class MapView extends JComponent implements Projection {
             shownCache.clear();
             shownCacheMap = map;
         }
-        var at = shownCache.get(poi);
-        if (at == null) {
-            at = shown(poi.drawn());
-            shownCache.put(poi, at);
-        }
-        return at;
+        return shownCache.computeIfAbsent(poi, p -> shown(p.drawn()));
     }
 
     static long cellKey(double worldX, double worldY, double cellWorld) {
@@ -1345,7 +1503,7 @@ final class MapView extends JComponent implements Projection {
 
     /** A label of the game's map on the map in view, where that map draws it. */
     @RequiredArgsConstructor
-    static final class DrawnLabel {
+    static class DrawnLabel {
         final MapData.Place place;
         final WorldPoint at;
         final int pass;
@@ -1383,8 +1541,7 @@ final class MapView extends JComponent implements Projection {
                 : toDrawn(map.id, at) != null || maps != null && maps.drawsGame(map, at);
             if (shown) {
                 int kind = KINDS.indexOf(place.kind);
-                found.add(new DrawnLabel(place, shownOn(map, at), labelPass(place.kind),
-                    kind < 0 ? WHITE : KIND_COLORS[kind]));
+                found.add(new DrawnLabel(place, shownOn(map, at), labelPass(place.kind), kind < 0 ? WHITE : KIND_COLORS[kind]));
             }
         }
         return found;
@@ -1416,7 +1573,8 @@ final class MapView extends JComponent implements Projection {
                 double x = w / 2.0 + (label.at.getX() + 0.5 - centerX) * scale;
                 double top = h / 2.0 - (label.at.getY() + 0.5 - centerY) * scale - metrics.getAscent();
                 // Most are off screen when zoomed in: no box for them.
-                if (top > h || top + metrics.getHeight() < 0 || abs(x - w / 2.0) > (w + label.width) / 2.0 + 3) {
+                double m = margin();
+                if (top > h + m || top + metrics.getHeight() < -m || abs(x - w / 2.0) > (w + label.width) / 2.0 + 3 + m) {
                     continue;
                 }
                 var box = new Rectangle2D.Double(x - label.width / 2.0 - 3, top, label.width + 6, metrics.getHeight());
@@ -1426,8 +1584,8 @@ final class MapView extends JComponent implements Projection {
                     }
                 }
                 taken.add(box);
-                text.draw(g, label.place.name, font, (float) (x - label.width / 2.0), (float) (top + metrics.getAscent()),
-                    label.color);
+                upright(g, x, top + metrics.getHeight() / 2.0, () -> text.draw(g, label.place.name, font,
+                    (float) (x - label.width / 2.0), (float) (top + metrics.getAscent()), label.color));
             }
         }
     }
@@ -1448,19 +1606,19 @@ final class MapView extends JComponent implements Projection {
         if (zoom < -1.5 || maps == null) {
             return;
         }
-        double left = screenX(2944), right = screenX(3392);
+        double left = screenX(Tiles.WILD_X), right = screenX(Tiles.WILD_X + Tiles.WILD_SIZE);
         g.setFont(SMALL_FONT);
-        for (int start : WILDERNESS_STARTS) {
+        for (int start : Tiles.WILD_STARTS) {
             if (plane != 0 || !onThisMap(maps.find(3100, start + 100))) {
                 continue;
             }
-            for (int level = 1; level <= 56; level++) {
+            for (int level = 1; level <= Tiles.WILD_SIZE / 8; level++) {
                 boolean limit = level == 21 || level == 31;
                 if (level != 1 && level % 5 != 0 && !limit) {
                     continue;
                 }
                 double y = screenY(start + (level - 1) * 8);
-                if (y < -2 || y > getHeight() + 2) {
+                if (y < -2 - margin() || y > getHeight() + 2 + margin()) {
                     continue;
                 }
                 boolean strong = level == 1 || limit;
@@ -1468,7 +1626,10 @@ final class MapView extends JComponent implements Projection {
                 g.setColor(strong ? WILDERNESS_STRONG : WILDERNESS_FAINT);
                 g.draw(new Line2D.Double(left, y, right, y));
                 if (zoom >= -0.5 || strong) {
-                    text.draw(g, "Level " + level + (limit ? ": no teleports above " + (level - 1) : ""), SMALL_FONT, (float) max(4, left + 4), (float) y - 3, WILDERNESS_TEXT);
+                    String label = "Level " + level + (limit ? t("mvAbove", level - 1) : "");
+                    // Turned, the view's left is no edge one sees: upright on the line, by the middle.
+                    double x = turned() ? min(max(getWidth() / 2.0, left), right - 60) : max(4, left + 4);
+                    upright(g, x, y, () -> text.draw(g, label, SMALL_FONT, (float) x, (float) y - 3, WILDERNESS_TEXT));
                 }
             }
         }
@@ -1481,7 +1642,8 @@ final class MapView extends JComponent implements Projection {
         var at = shown(player);
         double x = screenX(at.getX() + 0.5), y = screenY(at.getY() + 0.5);
         if (!(x < -4 || y < -4 || x > getWidth() + 4 || y > getHeight() + 4)) {
-            PlayerMarker.paint(g, text, x, y, zoom, at.getPlane() != plane, home);
+            // Upright on a turned map: "You" stays under it.
+            upright(g, x, y, () -> PlayerMarker.paint(g, text, x, y, zoom, at.getPlane() != plane, home));
             return;
         }
         // Out of view: a pointer at the edge.
@@ -1502,13 +1664,14 @@ final class MapView extends JComponent implements Projection {
             return;
         }
         var at = shown(poi.drawn());
-        var anchor = fromLayers(layer -> layer.labelAnchor(poi, projection));
+        var anchor = fromLayers(layer -> layer.labelAnchor(poi, this));
         double x = anchor != null ? anchor.getX() : screenX(at.getX() + 0.5);
         double y = anchor != null ? anchor.getY() : screenY(at.getY() + 0.5) + iconSize(zoom) * 0.62 + 4;
         g.setFont(LABEL_FONT);
         var metrics = g.getFontMetrics();
         int width = metrics.stringWidth(poi.name);
-        double left = max(2, min(getWidth() - width - 12, x - width / 2.0 - 5));
+        var back = upright(g, x, y - iconSize(zoom) * 0.62 - 4);
+        double left = back != null ? x - width / 2.0 - 5 : max(2, min(getWidth() - width - 12, x - width / 2.0 - 5));
         var box = new RoundRectangle2D.Double(left, y, width + 10, metrics.getHeight() + 4, 8, 8);
         g.setColor(LABEL_BACKGROUND);
         g.fill(box);
@@ -1517,10 +1680,14 @@ final class MapView extends JComponent implements Projection {
         g.draw(box);
         g.setColor(WHITE);
         text(g, poi.name, left + 5, y + 2 + metrics.getAscent());
+        if (back != null) {
+            g.setTransform(back);
+        }
     }
 
     /** The icon a click here would take (tests use it as a click). */
-    Poi iconAt(Point p) {
+    Poi iconAt(Point at) {
+        var p = unturn(at);
         var frame = drawn;
         for (int i = frame.size() - 1; i >= 0; i--) {
             var d = frame.get(i);
@@ -1528,7 +1695,7 @@ final class MapView extends JComponent implements Projection {
                 if (mapBelow(d.poi) == null) {
                     // One of ours on the game's map link: the click goes where the link does.
                     for (var layer : hitLayers) {
-                        var under = layer.hit(p, projection);
+                        var under = layer.hit(p, this);
                         if (under != null && mapBelow(under) != null) {
                             return under;
                         }
@@ -1537,12 +1704,7 @@ final class MapView extends JComponent implements Projection {
                 return d.poi;
             }
         }
-        return fromLayers(layer -> layer.hit(p, projection));
-    }
-
-    void setChrome(Consumer<Point> chrome) {
-        this.chrome = chrome;
-        repaint();
+        return fromLayers(layer -> layer.hit(p, this));
     }
 
     /** Painted after the other controls, so those win a click where they overlap. */
@@ -1567,14 +1729,6 @@ final class MapView extends JComponent implements Projection {
 
     void paintControls(Graphics2D g) {
         var painted = new ArrayList<Control>();
-        if (chrome == null) {
-            backOffset = 0;
-            paintBack(g, painted);
-            paintIconsButton(g, painted, getWidth() - MARGIN);
-            paintWidgets(g, painted, getHeight() - MARGIN - 18);
-            controls = painted;
-            return;
-        }
         int w = getWidth();
         g.setFont(CONTROL_FONT);
         var metrics = g.getFontMetrics();
@@ -1586,7 +1740,7 @@ final class MapView extends JComponent implements Projection {
         if (window != null) {
             Control close = control(g, painted, w - MARGIN - CONTROL, MARGIN, CONTROL, window::close, "Close (Esc)");
             Control max = control(g, painted, w - MARGIN - 2 * CONTROL - 4, MARGIN, CONTROL, window::toggleMaximised,
-                window.maximised ? "Make smaller" : "Fill the game view");
+                window.maximised ? "Make smaller" : t("mvFill"));
             g.setColor(WHITE);
             glyph(g, "CLOSE", close);
             glyph(g, window.maximised ? "RESTORE" : "MAXIMISE", max);
@@ -1595,8 +1749,7 @@ final class MapView extends JComponent implements Projection {
         int right = w - MARGIN - CONTROL, bottom = getHeight() - MARGIN - 18 - CONTROL;
         Control out = control(g, painted, right, bottom, CONTROL, () -> zoomBy(-1), "Zoom out");
         Control in = control(g, painted, right, bottom - CONTROL - 2, CONTROL, () -> zoomBy(1), "Zoom in");
-        Control follow = control(g, painted, right, bottom - 2 * CONTROL - 12, CONTROL,
-            () -> {
+        Control follow = control(g, painted, right, bottom - 2 * CONTROL - 12, CONTROL, () -> {
                 if (following) {
                     setFollowing(false);
                 } else {
@@ -1651,7 +1804,7 @@ final class MapView extends JComponent implements Projection {
             int cy = getHeight() / 2;
             notice(g, t("mvNoMap"), cy - 14);
             g.setFont(CONTROL_FONT);
-            button(g, painted, getWidth() / 2.0, cy, "Check for a new map", 28, 0.5, () -> {
+            button(g, painted, getWidth() / 2.0, cy, t("mvCheck"), 28, 0.5, () -> {
                 mapUnavailable = false;
                 repaint();
                 checkForMap.run();
@@ -1707,10 +1860,9 @@ final class MapView extends JComponent implements Projection {
         double x = MARGIN + backOffset;
         // Off the world map: a button to it first, then Back (unless Back goes there).
         var to = backMap();
-        var world = maps == null || map == null || map.id == SURFACE || map.id == FULL ? null
-            : maps.byId(SURFACE);
+        var world = maps == null || map == null || map.id == SURFACE || map.id == FULL ? null : maps.byId(SURFACE);
         if (world != null && world != to) {
-            x += button(g, painted, x, MARGIN, "World map", 24, 0, () -> toWorld(world), "Open the world map") + 6;
+            x += button(g, painted, x, MARGIN, "World map", 24, 0, () -> toWorld(world), t("mvWorld")) + 6;
         }
         if (to == null) {
             return;
@@ -1790,8 +1942,11 @@ final class MapView extends JComponent implements Projection {
             full = true;
         }
         if (overControl != null || !dragging) {
-            setCursor(getPredefinedCursor(overControl != null || hit != null ? HAND_CURSOR
-                : DEFAULT_CURSOR));
+            var cursor = getPredefinedCursor(overControl != null || hit != null ? HAND_CURSOR : DEFAULT_CURSOR);
+            // Set only when it changes: each set goes to the window system.
+            if (getCursor() != cursor) {
+                setCursor(cursor);
+            }
         }
         if (full) {
             repaint();
@@ -1799,7 +1954,7 @@ final class MapView extends JComponent implements Projection {
     }
 
     @RequiredArgsConstructor
-    static final class Back {
+    static class Back {
         final BaseMap map;
         final double x, y, zoom;
         final int plane;
@@ -1876,8 +2031,7 @@ final class MapView extends JComponent implements Projection {
 
     /** Where an icon leads when that is another map or another dungeon floor; null otherwise. */
     static Poi.Link mapBelow(Poi poi) {
-        if (poi == null || poi.target == null && poi.type != DUNGEON_ENTRANCE && poi.type != MAP_EXIT
-            && poi.type != MAP_LINK) {
+        if (poi == null || poi.target == null && poi.type != DUNGEON_ENTRANCE && poi.type != MAP_EXIT && poi.type != MAP_LINK) {
             return null;
         }
         for (var link : poi.links()) {
@@ -1885,8 +2039,7 @@ final class MapView extends JComponent implements Projection {
                 && link.point.getPlane() != poi.location.getPlane()
                 // The game's map links jump within one map too (Keldagrim's tunnel and city).
                 || poi.type == MAP_LINK && (link.point.getPlane() != poi.location.getPlane()
-                    || max(abs(link.point.getX() - poi.location.getX()),
-                        abs(link.point.getY() - poi.location.getY())) > 12);
+                    || max(abs(link.point.getX() - poi.location.getX()), abs(link.point.getY() - poi.location.getY())) > 12);
             // Also into the map of everything: it draws the ground no other map shows.
             if (link.map != null && elsewhere && (poi.target == null || link.map == poi.target)) {
                 return link;

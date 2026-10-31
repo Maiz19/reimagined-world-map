@@ -6,11 +6,10 @@ import java.util.function.*;
 import lombok.*;
 import net.runelite.api.gameval.*;
 import net.runelite.client.ui.*;
-import net.runelite.api.gameval.SpriteID.OrbFiller;
-import net.runelite.api.gameval.SpriteID.OrbIcon;
+import net.runelite.api.gameval.SpriteID.*;
 
 /** The game's minimap orbs drawn from its own sprites: frame, fill to what is left, icon and coloured number. */
-final class Orbs {
+class Orbs {
     /** The frame: number box on the left, orb on the right. */
     static final int WIDTH = 57, HEIGHT = 34, ORB_X = 27, ORB_Y = 4, ORB = 26;
 

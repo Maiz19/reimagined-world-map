@@ -47,7 +47,7 @@ class RegionTable {
         int region = regionId(x, y);
         String text = zones.get(region);
         var ids = owners.get(region);
-        if (text == null || ids == null) {
+        if (text == null || ids == null || text.length() < ZONES * ZONES) {
             return null;
         }
         int zx = (x & 63) / ZONE, zy = (y & 63) / ZONE, mask = MASKS.indexOf(text.charAt(zx * ZONES + zy));
@@ -86,7 +86,8 @@ class RegionTable {
             return new int[]{(tile >> 2) - 2, tile & 3};
         }
         var packed = floors.get(regionId(x, y));
-        int v = packed == null ? 0 : packed[((x & 63) / ZONE * ZONES + (y & 63) / ZONE) * 4 + floor];
+        int v = packed == null || packed.length < ZONES * ZONES * 4 ? 0
+            : packed[((x & 63) / ZONE * ZONES + (y & 63) / ZONE) * 4 + floor];
         return v == 0 ? null : new int[]{(v >> 2) - 2, v & 3};
     }
 

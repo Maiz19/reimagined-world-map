@@ -1,5 +1,6 @@
 package com.hdmapreforged;
 
+import java.awt.Color;
 import java.awt.image.*;
 import java.util.*;
 import java.util.function.*;
@@ -8,7 +9,7 @@ import lombok.*;
 import net.runelite.api.coords.*;
 
 /** Last known location of each party member: written from network threads, read on Swing, so all synchronized. */
-final class PartyMembers {
+class PartyMembers {
     /** Heartbeats come every 30 s; after this without news the marker fades. */
     static final long FRESH_MILLIS = 75_000, FADE_MILLIS = 5 * 60_000;
     /** After this without news the member is left off the map (probably crashed). */
@@ -18,7 +19,7 @@ final class PartyMembers {
     static final long OWN_MESSAGE_PRIORITY_MILLIS = 60_000;
 
     @RequiredArgsConstructor
-    static final class Marker {
+    static class Marker {
         final long id;
         final String name;
         final WorldPoint point;
@@ -32,21 +33,48 @@ final class PartyMembers {
         boolean stale() {
             return ageMillis > FRESH_MILLIS;
         }
+
+        /** The name, or "Party member" while none is known. */
+        String label() {
+            return name != null ? name : "Party member";
+        }
+
+        /** Their colour on the map; null for a member of the party with no place to show (not logged in). */
+        Color color() {
+            return point == null ? null : PartyOverlay.color(id);
+        }
     }
 
-    static final class Member {
+    /** All that is known of one member. */
+    static class Member {
         String name;
         WorldPoint point;
         boolean house;
         int world;
         BufferedImage avatar;
         long updated, ownUpdated = Long.MIN_VALUE / 2;
+        Gear gear;
+        /** Experience last heard (each state tells it), for the drops. */
+        int[] experience;
+        Foe foe;
+        final Session session = new Session();
+        final List<Drop> drops = new ArrayList<>();
+        final List<Loot> loot = new ArrayList<>();
     }
 
+    /** Nothing known: what an unknown member reads as; never written to. */
+    static final Member NONE = new Member();
     final Map<Long, Member> members = new HashMap<>();
-    final Map<Long, Gear> gear = new HashMap<>();
 
-    static final class Gear {
+    Member of(long id) {
+        return members.computeIfAbsent(id, k -> new Member());
+    }
+
+    Member find(long id) {
+        return members.getOrDefault(id, NONE);
+    }
+
+    static class Gear {
         final int[] inventory, quantities, equipment, levels, boosted;
         /** Experience per skill (a gear made in a test may leave it null). */
         final int[] experience;
@@ -71,17 +99,16 @@ final class PartyMembers {
     }
 
     @RequiredArgsConstructor
-    static final class Drop {
+    static class Drop {
         final int skill, amount;
         final long at;
     }
 
     static final long DROP_MS = 2200;
     static final int MAX_DROPS = 16;
-    final Map<Long, List<Drop>> drops = new HashMap<>();
 
     /** What a member got since first seen this session: experience by skill, the drops they shared. */
-    static final class Session {
+    static class Session {
         final long[] xp = new long[HdMapPartyState.SKILLS];
         long value;
         /** The most valuable drops, most first; the latest, newest first. */
@@ -105,45 +132,44 @@ final class PartyMembers {
 
     /** Drops kept in a session's lists. */
     static final int SESSION_DROPS = 5;
-    final Map<Long, Session> sessions = new HashMap<>();
 
     /** What a member got this session; null while nothing yet. */
     synchronized Session session(long id) {
-        var session = sessions.get(id);
+        var session = find(id).session;
         return session == null || session.top.isEmpty() && Arrays.stream(session.xp).allMatch(x -> x == 0) ? null
             : session.copy();
     }
-
-    /** Each member's experience last heard (each state tells it), for its drops. */
-    final Map<Long, int[]> experience = new HashMap<>();
 
     /**
      * A member's state: whole, or changes onto the one had (none had: the next whole one comes within a minute); a
      * fresh one starts their experience anew (no burst of gains from another account), an unshared one drops it all.
      */
     synchronized void state(long id, HdMapPartyState message, long at) {
-        Gear before = gear.get(id);
+        var member = of(id);
+        Gear before = member.gear;
         if (message.fresh() || message.isUnshared()) {
-            experience.remove(id);
+            member.experience = null;
         }
         if (message.isUnshared()) {
-            gear.remove(id);
+            member.gear = null;
         } else if (message.whole() || before != null) {
             gear(id, new Gear(message, before, at));
         }
     }
 
     synchronized void gear(long id, Gear shared) {
-        gear.put(id, shared);
+        of(id).gear = shared;
         experience(id, shared.experience, shared.at);
     }
 
     /** What a member's experience became: the gain since last heard rises as drops and adds to the session. */
     synchronized void experience(long id, int[] now, long at) {
-        int[] before = now == null ? null : experience.put(id, now);
+        var member = of(id);
+        int[] before = now == null ? null : member.experience;
+        member.experience = now == null ? member.experience : now;
         if (before != null) {
-            var list = drops.computeIfAbsent(id, k -> new ArrayList<>());
-            var session = sessions.computeIfAbsent(id, k -> new Session());
+            var list = member.drops;
+            var session = member.session;
             for (int k = 0; k < Math.min(now.length, session.xp.length); k++) {
                 int gained = now[k] - before[k];
                 if (gained > 0 && gained < 5_000_000) {
@@ -160,7 +186,7 @@ final class PartyMembers {
     }
 
     @RequiredArgsConstructor
-    static final class Loot {
+    static class Loot {
         final int item, quantity;
         final long value, at;
         /** An untradeable drop's name, else null. */
@@ -170,21 +196,21 @@ final class PartyMembers {
     static final long LOOT_MS = 3500;
     /** Untradeables first (a pet, a clue: no price), then the most valuable; as the sender picks its few too. */
     static final Comparator<Loot> BEST = Comparator.comparing((Loot l) -> l.name == null).thenComparingLong(l -> -l.value);
-    final Map<Long, List<Loot>> loot = new HashMap<>();
 
     synchronized void loot(long id, Loot drop) {
-        var session = sessions.computeIfAbsent(id, k -> new Session());
+        var member = of(id);
+        var session = member.session;
         session.value += drop.value;
         session.latest.add(0, drop);
-        // An untradeable seen before adds to it (Tokkul kill after kill is one entry); at most two of them stand first
+        // An untradeable seen before adds to it (Tokkul kill after kill is one entry); the two newest stand first
         // (a pet, a clue: worth nothing in coins, they would drop off the list), then the most valuable.
-        var same = drop.name == null ? null
-            : session.top.stream().filter(l -> l.item == drop.item).findFirst().orElse(null);
+        var same = drop.name == null ? null : session.top.stream().filter(l -> l.item == drop.item).findFirst().orElse(null);
         session.top.remove(same);
         session.top.add(same == null ? drop : new Loot(drop.item, same.quantity + drop.quantity, 0, drop.at, drop.name));
         session.top.sort(BEST);
         var ordered = new ArrayList<Loot>();
-        session.top.stream().filter(l -> l.name != null).limit(2).forEach(ordered::add);
+        session.top.stream().filter(l -> l.name != null).sorted(Comparator.comparingLong((Loot l) -> -l.at)).limit(2)
+            .forEach(ordered::add);
         session.top.stream().filter(l -> l.name == null).forEach(ordered::add);
         session.top.clear();
         session.top.addAll(ordered);
@@ -193,7 +219,7 @@ final class PartyMembers {
                 kept.subList(SESSION_DROPS, kept.size()).clear();
             }
         }
-        var list = loot.computeIfAbsent(id, k -> new ArrayList<>());
+        var list = member.loot;
         list.removeIf(l -> drop.at - l.at > LOOT_MS);
         list.add(drop);
         // A big pile shows its best few.
@@ -204,7 +230,7 @@ final class PartyMembers {
     }
 
     synchronized List<Loot> loot(long id, long now) {
-        return recent(loot.get(id), l -> now - l.at > LOOT_MS);
+        return recent(find(id).loot, l -> now - l.at > LOOT_MS);
     }
 
     /** A copy without the old ones, which go. */
@@ -217,11 +243,11 @@ final class PartyMembers {
     }
 
     synchronized List<Drop> drops(long id, long now) {
-        return recent(drops.get(id), d -> now - d.at > DROP_MS);
+        return recent(find(id).drops, d -> now - d.at > DROP_MS);
     }
 
     synchronized Gear gear(long id) {
-        return gear.get(id);
+        return find(id).gear;
     }
 
     /** A location from our own message; a null point means they left the game. */
@@ -255,7 +281,8 @@ final class PartyMembers {
     synchronized void name(long id, String name) {
         Member member = members.get(id);
         name = clean(name);
-        if (member != null && member.name == null && name != null) {
+        // A member's own messages carry their name when they have the plugin: only then is this the fallback.
+        if (member != null && name != null && (member.name == null || member.ownUpdated < 0)) {
             member.name = name;
         }
     }
@@ -272,12 +299,45 @@ final class PartyMembers {
         }
     }
 
+    /** The NPC a member fights, as their last message said; {@code ended} when they said the fight was over (0: on). */
+    @RequiredArgsConstructor
+    static class Foe {
+        final int npc;
+        final String name;
+        /** 0 to 1; -1 while its health bar has not shown in their game. */
+        final double health;
+        final long at, ended;
+    }
+
+    /** A fight not heard of this long is over (the member left, a message lost); an ended one shows this long. */
+    static final long FOE_MS = 30_000, FOE_ENDED_MS = 2_500;
+
+    synchronized void foe(long id, HdMapPartyFoe message, long now) {
+        var member = of(id);
+        var before = member.foe;
+        if (message.fighting()) {
+            member.foe = new Foe(message.npc(), message.name(), message.health(), now, 0);
+        } else if (before != null && before.ended == 0) {
+            member.foe = new Foe(before.npc, before.name, before.health, now, now);
+        }
+    }
+
+    /** The fight to show for a member; null when none. */
+    synchronized Foe foe(long id, long now) {
+        var foe = find(id).foe;
+        if (foe != null && now - foe.at > (foe.ended > 0 ? FOE_ENDED_MS : FOE_MS)) {
+            of(id).foe = null;
+            return null;
+        }
+        return foe;
+    }
+
     synchronized void remove(long id) {
-        List.of(members, gear, drops, loot, sessions, experience).forEach(m -> m.remove(id));
+        members.remove(id);
     }
 
     synchronized void clear() {
-        List.of(members, gear, drops, loot, sessions, experience).forEach(Map::clear);
+        members.clear();
     }
 
     synchronized boolean isEmpty() {

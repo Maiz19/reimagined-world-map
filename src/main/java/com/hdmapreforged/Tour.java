@@ -127,19 +127,8 @@ final class Tour {
         if (kind == null || kind.entries.isEmpty()) {
             return null;
         }
-        var best = kind.entries.get(0).point;
-        if (near == null) {
-            return best;
-        }
-        long bestDistance = Long.MAX_VALUE;
-        for (var entry : kind.entries) {
-            long d = away(entry.point, near);
-            if (d < bestDistance) {
-                best = entry.point;
-                bestDistance = d;
-            }
-        }
-        return best;
+        return near == null ? kind.entries.get(0).point : kind.entries.stream().map(entry -> entry.point)
+            .min(Comparator.comparingLong(p -> away(p, near))).get();
     }
 
     /** How far {@code p} is from {@code near} for "nearest": squared, as the crow flies, any on the same floor first. */
@@ -232,11 +221,8 @@ final class Tour {
 
     /** A line's cells, trimmed: parted by tabs, or without any by {@link #SHARED} (a bare "|" counts too). */
     static String[] cells(String line) {
-        var cells = line.indexOf('\t') >= 0 ? line.split("\t", -1) : line.split("\\s*\\|\\s*", -1);
-        for (int i = 0; i < cells.length; i++) {
-            cells[i] = cells[i].trim();
-        }
-        return cells;
+        return Arrays.stream(line.indexOf('\t') >= 0 ? line.split("\t", -1) : line.split("\\s*\\|\\s*", -1))
+            .map(String::trim).toArray(String[]::new);
     }
 
     /** Without what would part a line's cells or end it. */
@@ -272,11 +258,9 @@ final class Tour {
             if (!fits(locked, i, 0)) {
                 continue;
             }
-            best[1 << i][i][0] = weight(cost[0][i + 1], unreachable);
-            from[1 << i][i][0] = -1;
-            if (once != null) {
-                best[1 << i][i][1] = weight(once[0][i + 1], unreachable);
-                from[1 << i][i][1] = -1;
+            for (int used = 0; used < (once == null ? 1 : 2); used++) {
+                best[1 << i][i][used] = weight((used == 0 ? cost : once)[0][i + 1], unreachable);
+                from[1 << i][i][used] = -1;
             }
         }
         for (int set = 1; set < full; set++) {

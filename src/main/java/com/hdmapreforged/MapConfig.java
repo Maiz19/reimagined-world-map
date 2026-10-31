@@ -54,6 +54,11 @@ public interface MapConfig extends Config {
         return false;
     }
 
+    @ConfigItem(keyName = "minimapZoom", name = "", description = "", hidden = true)
+    default double minimapZoom() {
+        return 0;
+    }
+
     @ConfigItem(keyName = "iconSize", name = "", description = "", hidden = true)
     default int iconSize() {
         return 18;
@@ -100,7 +105,25 @@ public interface MapConfig extends Config {
         return true;
     }
 
-    @ConfigItem(keyName = "sidebar", name = "Panel in the sidebar", position = 4, section = map,
+    @ConfigItem(keyName = "turnWithCamera", name = "Turn with the camera", position = 4, section = map,
+        description = "While following you, the map turns as the camera does, like the minimap")
+    default boolean turnWithCamera() {
+        return false;
+    }
+
+    @ConfigItem(keyName = "hdMinimap", name = "HD minimap", position = 4, section = map,
+        description = "The map's own tiles inside the game's minimap")
+    default boolean hdMinimap() {
+        return false;
+    }
+
+    @ConfigItem(keyName = "hdMinimapPath", name = "HD minimap: walk path", position = 4, section = map,
+        description = "On the HD minimap, a line along the game's walk to where you clicked")
+    default boolean hdMinimapPath() {
+        return true;
+    }
+
+    @ConfigItem(keyName = "sidebar", name = "Panel in the sidebar", position = 5, section = map,
         description = "Route steps, custom routes and party in the sidebar. Off: open the map by hotkey or orb")
     default boolean sidebar() {
         return true;
@@ -142,6 +165,12 @@ public interface MapConfig extends Config {
     @ConfigItem(keyName = "partyShareGear", name = "Share inventory, equipment and skills", position = 2,
         section = friends, description = "What you carry and wear, skills and energy; only to your party")
     default boolean partyShareGear() {
+        return true;
+    }
+
+    @ConfigItem(keyName = "partyShareFight", name = "Share what I fight", position = 2, section = friends,
+        description = "The monster you fight and its health, shown beside you on your party's map")
+    default boolean partyShareFight() {
         return true;
     }
 
@@ -261,7 +290,7 @@ public interface MapConfig extends Config {
     @ConfigItem(keyName = "routeMinimap", name = "Route on the minimap", position = 8, section = route,
         description = "Dots on the minimap")
     default boolean routeMinimap() {
-        return true;
+        return false;
     }
 
     @ConfigItem(keyName = "routeItems", name = "Highlight route items", position = 9, section = route,

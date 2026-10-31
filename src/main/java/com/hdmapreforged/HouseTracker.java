@@ -11,9 +11,6 @@ import lombok.experimental.*;
  */
 @Accessors(fluent = true)
 final class HouseTracker {
-    /** By varbit 2187 (POH_HOUSE_LOCATION). */
-    static final RouteFiles.Table<int[][]> PORTALS = new RouteFiles.Table<>(() -> Pathfinder.list("house portals",
-        p -> Arrays.copyOf(Pathfinder.ints(p), 2)).toArray(int[][]::new));
     static final int PORTAL_RADIUS = 12;
     /** How long a choice at a house portal is kept: the walk to the portal, not a later visit. */
     static final int CHOICE_TICKS = 30;
@@ -41,12 +38,12 @@ final class HouseTracker {
     }
 
     static int portal(int location) {
-        var portals = PORTALS.get();
+        var portals = RouteFiles.tables().housePortals;
         return location > 0 && location < portals.length ? Tiles.pack(portals[location][0], portals[location][1], 0) : -1;
     }
 
     static int portalNear(int node) {
-        var portals = PORTALS.get();
+        var portals = RouteFiles.tables().housePortals;
         for (int i = 1; i < portals.length; i++) {
             if (Tiles.z(node) == 0 && Math.abs(Tiles.x(node) - portals[i][0]) <= PORTAL_RADIUS
                 && Math.abs(Tiles.y(node) - portals[i][1]) <= PORTAL_RADIUS) {
@@ -91,9 +88,12 @@ final class HouseTracker {
         return portal(location);
     }
 
-    /** Whether to look through the scene for the house's features now: once per visit or reload of one's own house. */
+    /**
+     * Whether to look through the scene for the house's features now: once per visit or reload of one's own house, and
+     * not before the map version's tables (their rules name the features) are read.
+     */
     boolean takeScan() {
-        boolean due = scan && own() && !building;
+        boolean due = scan && own() && !building && RouteFiles.available();
         scan &= !due;
         return due;
     }
@@ -126,25 +126,7 @@ final class HouseTracker {
     }
 
     static String feature(String objectName) {
-        String n = objectName.trim(), lower = n.toLowerCase(Locale.ROOT);
-        if (lower.endsWith(" space")) {
-            // Building mode's empty spaces ("Jewellery box space"): nothing built there.
-            return null;
-        }
-        if (lower.startsWith("portal nexus: ")) {
-            // A place of the nexus, as the scan names it: apart from the portals.
-            return "nexus:" + n.substring("portal nexus: ".length()).trim();
-        }
-        if (lower.endsWith(" portal") && !lower.startsWith("exit") && !lower.equals("portal") && !lower.contains("nexus")) {
-            return "portal:" + n.substring(0, n.length() - " portal".length()).trim();
-        }
-        if (lower.contains("jewellery box")) {
-            return lower.startsWith("ornate") ? "box:ornate" : lower.startsWith("fancy") ? "box:fancy" : "box:basic";
-        }
-        return lower.equals("fairy ring") || lower.equals("spirit tree") || lower.equals("obelisk") ? lower
-            : lower.equals("spiritual fairy tree") ? "spirit tree+fairy ring"
-            : lower.contains("amulet of glory") ? "glory" : lower.contains("xeric's talisman") ? "xeric"
-            : lower.contains("digsite pendant") ? "digsite" : null;
+        return RouteFiles.tables().rules("house feature rules", objectName.trim(), false).stream().findFirst().orElse(null);
     }
 
     Set<String> features() {
@@ -177,13 +159,9 @@ final class HouseTracker {
     }
 
     void reset() {
-        inside = false;
-        lastOutside = -1;
-        exit = -1;
-        own = false;
-        location = 0;
-        scan = false;
-        chosen = 0;
+        inside = own = scan = false;
+        lastOutside = exit = -1;
+        location = chosen = 0;
         replaceFeatures(Set.of());
     }
 }
