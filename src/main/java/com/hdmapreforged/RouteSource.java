@@ -232,7 +232,8 @@ final class RouteSource {
             for (var gate : tables.gates) {
                 // Its quests and levels, and the items it takes (a key, a skavid map and a light) carried or worn.
                 if (meets(gate.need)) {
-                    into.add(new Edge(gate.from, gate.to, Kind.ENTRANCE, gate.name, null, 4).saying(said(null, gate.need)));
+                    into.add(new Edge(gate.from, gate.to, Kind.ENTRANCE, gate.name, null, 4)
+                        .saying(said(null, gate.need).and(gate.note)));
                 }
             }
         }
