@@ -54,6 +54,8 @@ final class RouteTables {
         String name, category, group, fee, tree, note;
         /** The house's way to the place (its fairy ring, spirit tree or obelisk), and what it uses there as the game says it ("Fairy ring BKS"). */
         boolean house;
+        /** A gate walked through, no step of its own (an invisible barrier). */
+        boolean walk;
         String inHouse;
         /** A fairy ring's codes in the order dialled. */
         List<String> codes;

@@ -635,14 +635,16 @@ final class Pathfinder {
 
     List<Step> steps(NodeTable nodes, List<Edge> all, int startOffset, int end, int target, boolean avoid) {
         // The walk drawn as the game walks it keeps to the steps the search kept to: no shut gate, no Wilderness.
-        Shut shut = (x, y, z, dx, dy) -> closed(pack(x, y, z), dx, dy) || avoid && wilderness(pack(x + dx, y + dy, z));
+        var walked = all.stream().filter(e -> e.kind == Edge.Kind.WALK).map(e -> List.of(e.from, e.to)).collect(toSet());
+        Shut shut = (x, y, z, dx, dy) -> closed(pack(x, y, z), dx, dy)
+            && !walked.contains(List.of(pack(x, y, z), pack(x + dx, y + dy, z))) || avoid && wilderness(pack(x + dx, y + dy, z));
         var reversed = new ArrayList<Step>();
         var run = new ArrayList<Integer>();
         int node = end;
         run.add(node);
         while (true) {
             int via = nodes.via(node), parent = parent(nodes, all, startOffset, node);
-            if (via >= 0) {
+            if (via >= 0 && all.get(via).kind != Edge.Kind.WALK) {
                 flush(reversed, run, nodes, shut);
                 Edge e = all.get(via);
                 int from = parent >= 0 ? parent : node;

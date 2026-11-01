@@ -13,7 +13,9 @@ final class Edge {
         SHIP,
         BOARD,
         DISEMBARK,
-        HOUSE
+        HOUSE,
+        /** A step on foot the ground has but a gate shuts below its needs (an invisible barrier): part of the walk. */
+        WALK
     }
 
     static final int ANYWHERE = -1;
