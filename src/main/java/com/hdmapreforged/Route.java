@@ -250,8 +250,10 @@ final class Route {
         return reached != null && reached.contains(node);
     }
 
+    /** Ending elsewhere than asked; at sea not where its block holds the tile asked for (the boat lies there). */
     boolean snapped() {
-        return end >= 0 && end != target;
+        return end >= 0 && end != target
+            && !(isSea(end) && target >= 0 && !isSea(target) && z(target) == 0 && seaAt(x(target), y(target)) == end);
     }
 
     boolean has(Step.Kind kind) {

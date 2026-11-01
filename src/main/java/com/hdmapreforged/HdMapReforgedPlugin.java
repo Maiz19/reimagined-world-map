@@ -363,6 +363,9 @@ public class HdMapReforgedPlugin extends Plugin {
         });
     }
 
+    /** Whether the world map was last given boats to draw. */
+    boolean boatShown;
+
     @Subscribe
     public void onGameTick(GameTick tick) {
         ticks++;
@@ -378,6 +381,11 @@ public class HdMapReforgedPlugin extends Plugin {
         boolean boxed = home != null && !HousePlan.contains(home.getX(), home.getY());
         // In a house the party sees its portal (the house's own place is a copy of the game's rooms).
         party.tick(home == null ? location : boxed ? home : outside, home != null, ticks);
+        var boats = route.boatsOnMap(ticks);
+        if (!boats.isEmpty() || boatShown) {
+            boatShown = !boats.isEmpty();
+            screens(s -> s.view.setBoats(boats));
+        }
         var shown = home != null ? home : location;
         if (shown != null && (!shown.equals(lastPlayer) || boxed != atHome)) {
             lastPlayer = shown;
@@ -668,9 +676,11 @@ public class HdMapReforgedPlugin extends Plugin {
             loggedOut = true;
             lastPlayer = null;
             unlocks = null;
+            boatShown = false;
             showGrave(null);
             screens(s -> {
                 s.view.setPlayer(null);
+                s.view.setBoats(List.of());
                 s.setUnlocks(null);
             });
         }

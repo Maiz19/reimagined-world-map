@@ -141,6 +141,8 @@ public final class RouteFeature implements TourPanel.Actions {
     /** The tiles' look, read once for each message. Client thread. */
     int tileBorder, tileFill, tileWidth;
     static final Color END = new Color(255, 90, 70);
+    /** A destination on the sea, where one's boat stops rather than one stands. */
+    static final Color SEA_END = new Color(70, 160, 255);
 
     final Client client;
     final MapConfig config;
@@ -300,14 +302,18 @@ public final class RouteFeature implements TourPanel.Actions {
     boolean sentLines;
     int sentFrom = -1;
 
-    /** Shift + right-click on the ground. RuneLite entries; nothing is sent to the game. */
+    /**
+     * Shift + right-click on the ground, or on the sea from one's boat. RuneLite entries; nothing is sent to the game.
+     */
     @Subscribe
     public void onMenuOpened(MenuOpened event) {
         if (spPlanner() || !client.isKeyPressed(KeyCode.KC_SHIFT)) {
             return;
         }
         var view = client.getTopLevelWorldView();
-        Tile tile = view == null || Arrays.stream(event.getMenuEntries()).noneMatch(e -> e.getType() == MenuAction.WALK)
+        // On one's boat the sea's option is Set heading, not Walk here.
+        Tile tile = view == null || Arrays.stream(event.getMenuEntries())
+            .noneMatch(e -> e.getType() == MenuAction.WALK || e.getType() == MenuAction.SET_HEADING)
             ? null : view.getSelectedSceneTile();
         if (tile == null) {
             return;
@@ -2699,7 +2705,7 @@ public final class RouteFeature implements TourPanel.Actions {
             y = edge.getY() - sin(angle) * 12 * (DESTINATION_SCALE - 1);
         }
         g.setRenderingHint(KEY_ANTIALIASING, VALUE_ANTIALIAS_ON);
-        PlayerMarker.pointer(g, view.text, x, y, angle, DESTINATION_SCALE, END, null);
+        PlayerMarker.pointer(g, view.text, x, y, angle, DESTINATION_SCALE, isSea(to) ? SEA_END : END, null);
         var point = worldPoint(to);
         double r = 13 * DESTINATION_SCALE;
         clicks.add(new RoundRectangle2D.Double(x - r, y - r, 2 * r, 2 * r, 8, 8), () -> view.focus(point),
@@ -2924,7 +2930,41 @@ public final class RouteFeature implements TourPanel.Actions {
 
     /** A walk's tiles; a sail's as water tiles ({@link #sailTiles}). */
     static int[] tilesOf(Step step) {
-        return step.kind == Kind.SAIL ? sailTiles(step.points) : step.points;
+        return step.kind == Kind.SAIL ? keptSailTiles(step.points) : step.points;
+    }
+
+    /** Sails' blocks and tiles as last drawn whole, the newest first. */
+    static final java.util.Deque<int[][]> SAILS = new ArrayDeque<>();
+    static final int SAILS_KEPT = 8;
+
+    /**
+     * A sail's tiles; the rest of one drawn before (the boat on its way, its blocks the end of that one's) that one's
+     * tiles from the one nearest the boat's block on: drawn again from there its line would lie elsewhere, the tiles of
+     * both showing as the old fade.
+     */
+    static int[] keptSailTiles(int[] blocks) {
+        synchronized (SAILS) {
+            for (var sail : SAILS) {
+                int[] whole = sail[0], tiles = sail[1];
+                int skip = whole.length - blocks.length;
+                if (skip >= 0 && blocks.length > 0
+                    && Arrays.equals(whole, skip, whole.length, blocks, 0, blocks.length)) {
+                    int from = 0;
+                    for (int k = 1; k < tiles.length; k++) {
+                        if (distance(tiles[k], blocks[0]) < distance(tiles[from], blocks[0])) {
+                            from = k;
+                        }
+                    }
+                    return Arrays.copyOfRange(tiles, from, tiles.length);
+                }
+            }
+            int[] tiles = sailTiles(blocks);
+            SAILS.addFirst(new int[][]{blocks, tiles});
+            if (SAILS.size() > SAILS_KEPT) {
+                SAILS.removeLast();
+            }
+            return tiles;
+        }
     }
 
     /**
@@ -3176,6 +3216,46 @@ public final class RouteFeature implements TourPanel.Actions {
         return t;
     }
 
+    /** Per boat's world view, for the world map: the tick its faces were taken at and the faces. Client thread. */
+    final Map<Integer, Map.Entry<Integer, List<double[]>>> mapFaces = new HashMap<>();
+
+    /**
+     * The boats in the scene as the world map draws them, as the minimap shows them (one's own at its dock too): their
+     * models seen from above as the game's minimap draws them (taken again every 5 ticks) and where their corners lie
+     * in the world. Client thread.
+     */
+    List<MapView.Boat> boatsOnMap(int tick) {
+        var top = client.getTopLevelWorldView();
+        var boats = new ArrayList<MapView.Boat>();
+        for (var boat : top == null ? List.<WorldEntity>of() : top.worldEntities()) {
+            var deck = boat.getWorldView();
+            if (deck == null || deck.getScene() == null) {
+                continue;
+            }
+            var faces = mapFaces.get(deck.getId());
+            if (faces == null || tick - faces.getKey() >= 5 || tick < faces.getKey()) {
+                faces = Map.entry(tick, unmodifiableList(hdMinimap.deckFaces(deck)));
+                mapFaces.put(deck.getId(), faces);
+            }
+            int w = deck.getSizeX() * 128, h = deck.getSizeY() * 128;
+            double[] corners = new double[6];
+            boolean placed = true;
+            for (int k = 0; k < 3 && placed; k++) {
+                var p = boat.transformToMainWorld(new LocalPoint(k == 1 ? w : 0, k == 2 ? h : 0, deck.getId()));
+                placed = p != null;
+                if (placed) {
+                    corners[2 * k] = top.getBaseX() + p.getX() / 128.0;
+                    corners[2 * k + 1] = top.getBaseY() + p.getY() / 128.0;
+                }
+            }
+            if (placed) {
+                boats.add(new MapView.Boat(faces.getValue(), deck.getSizeX(), deck.getSizeY(), corners));
+            }
+        }
+        mapFaces.keySet().removeIf(id -> top == null || top.worldEntities().byIndex(id) == null);
+        return boats;
+    }
+
     /**
      * Our tiles inside the game's minimap (setting hdMinimap), centred, zoomed and turned as the game draws it, with its
      * dots drawn again on top. Draws only: clicks go to the game's minimap below.
@@ -3419,29 +3499,14 @@ public final class RouteFeature implements TourPanel.Actions {
          * edge round them. Client thread.
          */
         BufferedImage deck(WorldView deck, int scale) {
-            int w = deck.getSizeX() * scale, h = deck.getSizeY() * scale;
-            var image = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-            var g = image.createGraphics();
-            models(g, deck, scale);
-            g.dispose();
-            // The edge: each clear pixel beside a drawn one.
-            int[] px = image.getRGB(0, 0, w, h, null, 0, w), out = px.clone();
-            for (int i = 0; i < px.length; i++) {
-                int x = i % w, y = i / w;
-                if (px[i] >>> 24 == 0 && (x > 0 && px[i - 1] >>> 24 != 0 || x < w - 1 && px[i + 1] >>> 24 != 0
-                    || y > 0 && px[i - w] >>> 24 != 0 || y < h - 1 && px[i + w] >>> 24 != 0)) {
-                    out[i] = 0xff000001;
-                }
-            }
-            image.setRGB(0, 0, w, h, out, 0, w);
-            return image;
+            return MapView.Boat.picture(deckFaces(deck), deck.getSizeX(), deck.getSizeY(), scale);
         }
 
         /**
-         * The boat's models seen from above, on a picture at {@code scale} pixels a tile: each face in its own lit colour
-         * (a textured one its texture's), the higher drawn over the lower.
+         * The boat's models' faces seen from above, north up, in the deck's local units (128 a tile), the lower first:
+         * per face its corners, how high it lies (floor, then height) and its colour. Client thread.
          */
-        void models(Graphics2D g, WorldView deck, int scale) {
+        List<double[]> deckFaces(WorldView deck) {
             var textures = client.getTextureProvider();
             double brightness = textures == null ? 0.8 : textures.getBrightness();
             int north = deck.getSizeY() * 128;
@@ -3478,19 +3543,7 @@ public final class RouteFeature implements TourPanel.Actions {
                 }
             }
             faces.sort(Comparator.comparingDouble(f -> f[6]));
-            var d = (Graphics2D) g.create();
-            d.scale(scale / 128.0, scale / 128.0);
-            var path = new Path2D.Double();
-            for (var f : faces) {
-                path.reset();
-                path.moveTo(f[0], f[1]);
-                path.lineTo(f[2], f[3]);
-                path.lineTo(f[4], f[5]);
-                path.closePath();
-                d.setColor(new Color((int) f[7], true));
-                d.fill(path);
-            }
-            d.dispose();
+            return faces;
         }
 
         /** A model's faces into {@code faces}, turned by {@code orientation} (2048 a turn) and placed at {@code at}. */
@@ -4031,7 +4084,7 @@ public final class RouteFeature implements TourPanel.Actions {
             if (ends) {
                 var end = circle(x(p, route.end), y(p, route.end), 6);
                 g.setStroke(new BasicStroke(2f));
-                g.setColor(END);
+                g.setColor(isSea(route.end) ? SEA_END : END);
                 g.fill(end);
                 g.setColor(Color.WHITE);
                 g.draw(end);

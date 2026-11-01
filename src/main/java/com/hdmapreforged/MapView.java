@@ -616,6 +616,76 @@ class MapView extends JComponent {
         }
     }
 
+    /** A boat in the scene: its models seen from above and its south-west, south-east and north-west corners (tiles). */
+    @RequiredArgsConstructor
+    static final class Boat {
+        /** Per face, north up in the deck's local units (128 a tile), the lower first: corners, height, colour. */
+        final List<double[]> faces;
+        /** Its deck's size in tiles. */
+        final int tilesX, tilesY;
+        final double[] corners;
+
+        /** A face's width seen from above: twice its area over its longest side. */
+        static double width(double[] f) {
+            double area = abs((f[2] - f[0]) * (f[5] - f[1]) - (f[4] - f[0]) * (f[3] - f[1]));
+            double longest = max(hypot(f[2] - f[0], f[3] - f[1]), max(hypot(f[4] - f[2], f[5] - f[3]),
+                hypot(f[0] - f[4], f[1] - f[5])));
+            return longest == 0 ? 0 : area / longest;
+        }
+
+        /**
+         * A boat at {@code scale} pixels a tile, north up, as the game's minimap shows one: its faces unsmoothed, the
+         * higher over the lower, with a dark edge a pixel wide round them. Ropes and faces seen edge on, thinner than
+         * half a pixel, are left out: only the edge round them showed (squiggles).
+         */
+        static BufferedImage picture(List<double[]> faces, int tilesX, int tilesY, int scale) {
+            int w = tilesX * scale, h = tilesY * scale;
+            var image = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+            var g = image.createGraphics();
+            g.scale(scale / 128.0, scale / 128.0);
+            var path = new Path2D.Double();
+            for (var f : faces) {
+                if (width(f) * scale / 128 >= 0.5) {
+                    path.reset();
+                    path.moveTo(f[0], f[1]);
+                    path.lineTo(f[2], f[3]);
+                    path.lineTo(f[4], f[5]);
+                    path.closePath();
+                    g.setColor(new Color((int) f[7], true));
+                    g.fill(path);
+                }
+            }
+            g.dispose();
+            // The edge: each clear pixel beside a drawn one.
+            int[] px = image.getRGB(0, 0, w, h, null, 0, w), out = px.clone();
+            for (int i = 0; i < px.length; i++) {
+                int x = i % w, y = i / w;
+                if (px[i] >>> 24 == 0 && (x > 0 && px[i - 1] >>> 24 != 0 || x < w - 1 && px[i + 1] >>> 24 != 0
+                    || y > 0 && px[i - w] >>> 24 != 0 || y < h - 1 && px[i + w] >>> 24 != 0)) {
+                    out[i] = 0xff000001;
+                }
+            }
+            image.setRGB(0, 0, w, h, out, 0, w);
+            return image;
+        }
+    }
+
+    List<Boat> boats = List.of();
+    /** Each boat's picture, by the faces it was made of. Swing thread. */
+    Map<List<double[]>, BufferedImage> boatPictures = new IdentityHashMap<>();
+
+    void setBoats(List<Boat> boats) {
+        boolean same = boats.size() == this.boats.size();
+        for (int i = 0; same && i < boats.size(); i++) {
+            same = boats.get(i).faces == this.boats.get(i).faces
+                && Arrays.equals(boats.get(i).corners, this.boats.get(i).corners);
+        }
+        if (!same) {
+            this.boats = boats;
+            repaint();
+        }
+    }
+
     void setPlayer(WorldPoint player) {
         boolean moved = !Objects.equals(player, this.player);
         this.player = player;
@@ -963,6 +1033,7 @@ class MapView extends JComponent {
                 }
             }
             paintSpecial(g);
+            paintBoats(g);
             paintPlayer(g);
             if (hovered != null && hovered != selected) {
                 paintLabel(g, hovered);
@@ -1650,6 +1721,39 @@ class MapView extends JComponent {
         var edge = edge(x, y);
         PlayerMarker.pointer(g, text, edge.getX(), edge.getY(), atan2(y - edge.getY(), x - edge.getX()), 1, PlayerMarker.YELLOW,
             "You");
+    }
+
+    /** Pixels a tile of the boat's picture: the minimap's look, blown up. */
+    static final int BOAT_SCALE = 8;
+
+    /**
+     * The boats on the surface as the game's minimap draws them, turned and placed as they lie: their pixels blown up
+     * unsmoothed, sharp squares (smoothed they blurred).
+     */
+    void paintBoats(Graphics2D g) {
+        if (boats.isEmpty() || plane != 0 || map == null || map.id != SURFACE && map.id != FULL) {
+            return;
+        }
+        var made = new IdentityHashMap<List<double[]>, BufferedImage>();
+        for (var boat : boats) {
+            var picture = boatPictures.get(boat.faces);
+            made.put(boat.faces, picture != null ? picture
+                : Boat.picture(boat.faces, boat.tilesX, boat.tilesY, BOAT_SCALE));
+            paintBoat(g, boat, made.get(boat.faces));
+        }
+        boatPictures = made;
+    }
+
+    void paintBoat(Graphics2D g, Boat boat, BufferedImage boatPicture) {
+        double[] c = boat.corners;
+        double sx = screenX(c[0]), sy = screenY(c[1]), ex = screenX(c[2]), ey = screenY(c[3]);
+        double nx = screenX(c[4]), ny = screenY(c[5]);
+        double pw = boatPicture.getWidth(), ph = boatPicture.getHeight();
+        var d = (Graphics2D) g.create();
+        d.setRenderingHint(KEY_INTERPOLATION, VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+        d.drawImage(boatPicture, new AffineTransform((ex - sx) / pw, (ey - sy) / pw, (sx - nx) / ph, (sy - ny) / ph, nx,
+            ny), null);
+        d.dispose();
     }
 
     /** Where the line from the view's middle to a point off it crosses the view's edge, a little inside; else the point. */
