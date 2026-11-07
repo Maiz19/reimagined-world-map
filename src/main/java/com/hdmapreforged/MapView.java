@@ -1448,10 +1448,11 @@ class MapView extends JComponent {
         // Farther out of view an icon shares no cell with one in it: skipped before anything else.
         double reach = size + cellWorld * scale;
         var shown = candidates();
-        // A hovered icon the filter hides (a game icon's place) is added here, not in the candidates: a hover would
-        // make those anew over every place.
+        // A hovered place of the map's list that the filter hides is added here, not in the candidates: a hover would
+        // make those anew over every place. A game icon's own place (not in the list) is not: the game's sprite is
+        // drawn and ringed in the icon layer, and a badge as well drew a second ring beside it.
         if (hovered != null && !hidden.contains(hovered) && hovered.isOn(map) && shownCached(hovered) != null
-            && !shown.contains(hovered)) {
+            && !shown.contains(hovered) && pois.contains(hovered)) {
             shown = new ArrayList<>(shown);
             shown.add(hovered);
         }
