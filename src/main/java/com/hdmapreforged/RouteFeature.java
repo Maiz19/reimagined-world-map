@@ -812,6 +812,7 @@ public final class RouteFeature implements TourPanel.Actions {
             screen.view.addWidget((g, w, h, bottom, clicks) -> paintDestination(screen.view, g, clicks));
             screen.view.menus.add(this::contribute);
             screen.card.setRouter(this::routeTo);
+            screen.view.router = this::routeTo;
             screen.setStopAdder(this::addStop);
             // Of these places the map shows the one the planner gets to soonest (with the player's teleports and
             // transport), without starting a route; the nearest as the crow flies when no route can be planned now. The

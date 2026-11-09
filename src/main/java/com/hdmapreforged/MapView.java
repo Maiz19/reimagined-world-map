@@ -196,6 +196,8 @@ final class MapView extends JComponent implements Projection {
     BigWindow windowControls;
     final TextSprites text = new TextSprites();
     final List<MenuContributor> menus = new ArrayList<>();
+    /** Starts a route to a point (shift + click); null without routes. */
+    Consumer<WorldPoint> router;
     final List<HitLayer> hitLayers = new ArrayList<>();
     @Getter
     final Projection projection = this;
@@ -331,6 +333,15 @@ final class MapView extends JComponent implements Projection {
                     Poi hit;
                     if (clickCatcher.test(e.getPoint(), projection)) {
                         repaint();
+                    } else if (e.isShiftDown() && router != null) {
+                        // Shift + click: a route at once, to the icon's place (as its card's Route) or the ground.
+                        hit = iconAt(e.getPoint());
+                        var world = toWorld(e.getPoint());
+                        router.accept(hit != null ? hit.location
+                            : gamePoint(new WorldPoint((int) floor(world.getX()), (int) floor(world.getY()), plane)));
+                        if (hit != null) {
+                            select(hit);
+                        }
                     } else if ((hit = iconAt(e.getPoint())) != null || e.getClickCount() < 2) {
                         var inside = mapBelow(hit);
                         if (inside != null) {
