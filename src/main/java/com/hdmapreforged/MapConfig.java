@@ -18,7 +18,7 @@ public interface MapConfig extends Config {
         closedByDefault = true)
     String data = "data";
 
-    @ConfigSection(name = "Route", description = "Right-click the map, Path to here. Only shows the way", position = 2)
+    @ConfigSection(name = "Route", description = "Right-click the map, Path to here, or shift + click a place. Only shows the way", position = 2)
     String route = "route";
 
     @ConfigSection(name = "Own route planner", description = "Only with Route planner: Reimagined World Map", position = 3, closedByDefault = true)
