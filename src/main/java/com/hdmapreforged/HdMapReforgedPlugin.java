@@ -282,6 +282,7 @@ public class HdMapReforgedPlugin extends Plugin {
         on.view.addOverlay(layer);
         on.view.hitLayers.add(layer);
         on.view.badgeCover = layer::covers;
+        on.view.gameSprite = layer::sprite;
         return layer;
     }
 

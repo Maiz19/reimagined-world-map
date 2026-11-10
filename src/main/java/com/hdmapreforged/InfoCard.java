@@ -222,14 +222,14 @@ class InfoCard extends Fitted {
         }
         for (var found : nearest) {
             JLabel entry = link(found.name + "  (" + found.location.distanceTo2D(nearestTo) + " tiles)", () -> map.focus(found));
-            entry.setIcon(new ImageIcon(PoiIcons.image(found.type, 12)));
+            entry.setIcon(new ImageIcon(map.image(found, 12)));
             add(entry);
         }
     }
 
     void buildDetails() {
         JLabel title = text(poi.name, Color.WHITE, true);
-        title.setIcon(new ImageIcon(PoiIcons.image(poi.type, 16)));
+        title.setIcon(new ImageIcon(map.image(poi, 16)));
         title.setIconTextGap(6);
         add(title);
         String where = poi.type.displayName + (poi.map != null ? " · " + poi.map.name : "")

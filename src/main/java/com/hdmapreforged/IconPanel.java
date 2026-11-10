@@ -26,14 +26,14 @@ class IconPanel {
             for (var member : data.hidden.contains(poi) ? Collections.<Poi>emptyList() : poi.members()) {
                 add(member.type.layer, member.toggle(), () -> {
                     var picture = PoiIcons.picture(member.picture);
-                    return picture != null ? picture : PoiIcons.image(member.type, 15);
+                    return picture != null ? picture : PoiIcons.image(member.type, null, false, 15);
                 });
             }
         }
         for (var icon : data.icons) {
             add(icon.group, icon.toggle, () -> {
                 var sprite = GameIcons.element(icon.element);
-                return sprite != null ? sprite : PoiIcons.image(icon.poi.type, 15);
+                return sprite != null ? sprite : PoiIcons.image(icon.poi.type, null, false, 15);
             });
         }
         changed.run();

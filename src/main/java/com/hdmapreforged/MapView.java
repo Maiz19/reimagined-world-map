@@ -187,6 +187,8 @@ class MapView extends JComponent {
     final ScaledTiles scaled = new ScaledTiles();
     /** Which of our icons the game's own icon stands for (drawn by IconLayer), so no badge is drawn; once a frame. */
     Function<MapView, Predicate<Poi>> badgeCover;
+    /** The game's sprite drawn for a place (IconLayer's), else null. */
+    Function<Poi, BufferedImage> gameSprite = poi -> null;
     /** The window over the game, when this is its map. */
     BigWindow windowControls;
     final TextSprites text = new TextSprites();
@@ -427,6 +429,13 @@ class MapView extends JComponent {
     /** Of a stack, the picture of the first whose kind shows; 0 none. */
     int picture(Poi poi) {
         return poi.members().stream().filter(m -> !iconsOff.contains(m.toggle())).mapToInt(m -> m.picture).findFirst().orElse(0);
+    }
+
+    /** A place's icon as the map draws it, for the card and lists: the game's for it, else its picture, else its type's. */
+    BufferedImage image(Poi poi, int size) {
+        var game = gameSprite.apply(poi);
+        int picture = picture(poi);
+        return PoiIcons.image(poi.type, game != null ? game : PoiIcons.picture(picture), game != null || picture < 0, size);
     }
 
     /** Takes a left click before the icons do (the party's markers); true when used. */

@@ -625,7 +625,10 @@ class MapScreen extends JPanel implements Listener {
             shown++;
             var item = plainItem(hit.label);
             if (hit.icon != null) {
-                item.setIcon(new ImageIcon(image(hit.icon, 14)));
+                // As the map draws it; a kind of the game's icons ("Task board") as its first place.
+                var poi = hit.target instanceof Poi ? (Poi) hit.target
+                    : hit.icon == PoiType.GAME_ICON ? ((KindIndex.Kind) hit.target).entries.get(0).poi : null;
+                item.setIcon(new ImageIcon(poi != null ? view.image(poi, 14) : image(hit.icon, null, false, 14)));
             } else if (hit.type == KIND || hit.type == KIND_PLACE) {
                 item.setIcon(new ImageIcon(dotIcon()));
             }

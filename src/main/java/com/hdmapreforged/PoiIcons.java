@@ -54,16 +54,8 @@ class PoiIcons {
                 SPRITES.clear();
                 SPRITE_PIXELS.set(0);
             }
-            cached = sprite(extent, extent, device, sg -> {
-                if (sprite != null && (picture < 0 || sprite.getWidth() == ICON_PIXELS)) {
-                    // A game sprite, or our own picture of an item: pixel art of a game icon's size.
-                    paintGameIcon(sg, sprite, extent / 2, extent / 2, drawnSize, RINGS[emphasis]);
-                } else if (sprite != null) {
-                    paintPicture(sg, sprite, extent / 2, extent / 2, drawnSize, RINGS[emphasis]);
-                } else {
-                    paint(sg, type, extent / 2, extent / 2, drawnSize, RINGS[emphasis], locked);
-                }
-            });
+            cached = sprite(extent, extent, device,
+                sg -> paint(sg, type, sprite, picture < 0, extent / 2, extent / 2, drawnSize, RINGS[emphasis], locked));
             SPRITES.put(key, cached);
             SPRITE_PIXELS.addAndGet((long) cached.getWidth() * cached.getHeight());
         }
@@ -205,6 +197,21 @@ class PoiIcons {
         PICTURES.clear();
         // Keyed by the icons cleared here, which would stay reachable through their rings.
         OUTLINES.clear();
+    }
+
+    /**
+     * {@code sprite} once had: a game sprite ({@code game}) or our own picture of an item as pixel art of a game icon's
+     * size, else an item's picture in a frame; none, the type's icon.
+     */
+    static void paint(Graphics2D g, PoiType type, BufferedImage sprite, boolean game, double cx, double cy, double size,
+        Color ring, boolean locked) {
+        if (sprite == null) {
+            paint(g, type, cx, cy, size, ring, locked);
+        } else if (game || sprite.getWidth() == ICON_PIXELS) {
+            paintGameIcon(g, sprite, cx, cy, size, ring);
+        } else {
+            paintPicture(g, sprite, cx, cy, size, ring);
+        }
     }
 
     /** The game's own map icon for the type if it has one, else our badge for it, pixel art of the same size. */
@@ -413,11 +420,11 @@ class PoiIcons {
         return cells == null || cells.length < 2 ? otherwise : cells[1];
     }
 
-    /** A small image of an icon, for buttons and lists. */
-    static BufferedImage image(PoiType type, int size) {
+    /** A small image of an icon, for buttons and lists: {@code sprite} as the map draws it, none the type's. */
+    static BufferedImage image(PoiType type, BufferedImage sprite, boolean game, int size) {
         return sprite(size + 2, size + 2, 1, g -> {
             g.setRenderingHint(KEY_STROKE_CONTROL, VALUE_STROKE_PURE);
-            paint(g, type, (size + 2) / 2.0 - 0.5, (size + 2) / 2.0 - 1, size - 1, null, false);
+            paint(g, type, sprite, game, (size + 2) / 2.0 - 0.5, (size + 2) / 2.0 - 1, size - 1, null, false);
         });
     }
 

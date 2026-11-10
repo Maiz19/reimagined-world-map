@@ -301,6 +301,13 @@ class IconLayer implements MapView.Overlay, MapView.HitLayer {
         return new Point2D.Double(projection.screenX(icon.drawn.getX()) + offset, projection.screenY(icon.drawn.getY()) + offset);
     }
 
+    /** The game's sprite drawn for a place: its own icon's, or that of the shown icon standing for ours; else null. */
+    BufferedImage sprite(Poi poi) {
+        var icon = created.get(poi);
+        var cover = covering.get(poi);
+        return GameIcons.element(icon != null ? icon.element : cover == null || hidden(cover) ? -1 : cover.element);
+    }
+
     public Poi hit(Point point, MapView projection) {
         var icon = iconAt(point, projection);
         return icon == null ? null : icon.poi;
