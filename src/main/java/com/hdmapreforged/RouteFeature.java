@@ -1677,15 +1677,30 @@ public final class RouteFeature implements TourPanel.Actions {
     volatile RouteTables named;
 
     /**
-     * Asks the game once per map version for the names of the items its teleports, transports, gates, shortcuts and own
-     * ways need; they are also what is kept of the bank.
+     * Asks the game for the names of the items a map version's teleports, transports, gates, shortcuts and own ways need
+     * (also what is kept of the bank), and again for those it had not named yet; a name had later searches the route
+     * again, else its steps would say "Item 563".
      */
     void nameItems() {
         var names = itemNames;
         var tables = RouteFiles.tables();
-        if (names == null || tables == named || tables.places.isEmpty()) {
+        if (names == null || tables.places.isEmpty()) {
             return;
         }
+        if (tables != named) {
+            itemTables(tables);
+        }
+        int had = names.names.size();
+        if (!names.names.keySet().containsAll(routeItemIds)) {
+            names.resolve(routeItemIds, () -> {
+                if (names.names.size() > had) {
+                    settingsChanged();
+                }
+            });
+        }
+    }
+
+    void itemTables(RouteTables tables) {
         named = tables;
         var byStep = new HashMap<String, Set<Integer>>();
         tables.places.values().forEach(jumps -> jumps.stream().filter(jump -> !jump.house).forEach(jump ->
@@ -1699,7 +1714,6 @@ public final class RouteFeature implements TourPanel.Actions {
         fixedNeeds().forEach(needs -> Requirements.itemAmounts(needs.items, most));
         routeItemAmounts = unmodifiableMap(most);
         routeItemIds = unmodifiableSet(new HashSet<>(most.keySet()));
-        names.resolve(routeItemIds, () -> { });
     }
 
     /**
