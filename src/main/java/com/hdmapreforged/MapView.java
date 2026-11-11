@@ -193,7 +193,7 @@ class MapView extends JComponent {
     BigWindow windowControls;
     final TextSprites text = new TextSprites();
     final List<MenuContributor> menus = new ArrayList<>();
-    /** Starts a route to a point (shift + click); null without routes. */
+    /** Starts a route to a point (shift + click, if set); null without routes. */
     Consumer<WorldPoint> router;
     final List<HitLayer> hitLayers = new ArrayList<>();
 
@@ -319,7 +319,7 @@ class MapView extends JComponent {
                     Poi hit;
                     if (clickCatcher.test(unturn(e.getPoint()), MapView.this)) {
                         repaint();
-                    } else if (e.isShiftDown() && router != null) {
+                    } else if (e.isShiftDown() && router != null && config.routeShiftClick()) {
                         // Shift + click: a route at once, to the icon's place (as its card's Route) or the ground.
                         hit = iconAt(e.getPoint());
                         var world = toWorld(e.getPoint());

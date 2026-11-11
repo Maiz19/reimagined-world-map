@@ -18,7 +18,7 @@ public interface MapConfig extends Config {
         closedByDefault = true)
     String data = "data";
 
-    @ConfigSection(name = "Route", description = "Right-click the map, Path to here, or shift + click a place. Only shows the way", position = 2)
+    @ConfigSection(name = "Route", description = "Right-click the map, Path to here. Only shows the way", position = 2)
     String route = "route";
 
     @ConfigSection(name = "Own route planner", description = "Only with Route planner: Reimagined World Map", position = 3, closedByDefault = true)
@@ -70,10 +70,22 @@ public interface MapConfig extends Config {
         return false;
     }
 
+    @ConfigItem(keyName = "hideGameMap", name = "Hide the game's map options", position = -2,
+        description = "World map orb: only this map, none of the game's options")
+    default boolean hideGameMap() {
+        return false;
+    }
+
     @ConfigItem(keyName = "openMapKey", name = "Open map hotkey",
         description = "Opens and closes the map; Escape closes it too")
     default Keybind openMapKey() {
         return new Keybind(KeyEvent.VK_M, 0);
+    }
+
+    @ConfigItem(keyName = "mapInWindow", name = "Open map in a window",
+        description = "Hotkey and orb open the map in its own window")
+    default boolean mapInWindow() {
+        return false;
     }
 
     /** Icon kinds whose destination lines are hidden. */
@@ -297,6 +309,12 @@ public interface MapConfig extends Config {
         description = "Outline the next teleport's item or spell, and in the bank what to take")
     default boolean routeItems() {
         return true;
+    }
+
+    @ConfigItem(keyName = "routeShiftClick", name = "Shift + click routes", position = 10, section = route,
+        description = "Shift + click on the map starts a route there")
+    default boolean routeShiftClick() {
+        return false;
     }
 
     @ConfigItem(keyName = "routeTeleports", name = "Use teleports", position = 0, section = planner,

@@ -448,7 +448,7 @@ public class HdMapReforgedPlugin extends Plugin {
     @Subscribe
     public void onMenuEntryAdded(MenuEntryAdded event) {
         int widget = event.getActionParam1();
-        if (!isOrb(widget) || !config.orbOpensMap() || !isWorldMapOption(event.getOption())) {
+        if (!isOrb(widget) || !config.orbOpensMap() && !config.hideGameMap() || !isWorldMapOption(event.getOption())) {
             return;
         }
         ourEntryAdded = true;
@@ -456,6 +456,10 @@ public class HdMapReforgedPlugin extends Plugin {
         if (ownEntryIndex(client.getMenu().getMenuEntries()) >= 0) {
             return;
         }
+        // Also the other way than set: in a window or over the game.
+        boolean other = !config.mapInWindow();
+        client.getMenu().createMenuEntry(-1).setOption(MENU_OPTION + (other ? " (window)" : " (in game)")).setTarget("")
+            .setType(MenuAction.RUNELITE).setParam1(widget).onClick(entry -> toggleMap(other));
         client.getMenu().createMenuEntry(-1).setOption(MENU_OPTION).setTarget("").setType(MenuAction.RUNELITE).setParam1(widget)
             .onClick(entry -> toggleFullMap());
     }
@@ -559,14 +563,20 @@ public class HdMapReforgedPlugin extends Plugin {
     }
 
     void toggleFullMap() {
+        toggleMap(config.mapInWindow());
+    }
+
+    void toggleMap(boolean inWindow) {
         invokeLater(() -> {
-            if (fullMap != null) {
+            if (inWindow && screen != null) {
+                togglePopOut();
+            } else if (fullMap != null) {
                 fullMap.toggle();
             }
         });
     }
 
-    /** Keeps "Reimagined Map" as the orb's left-click option, as later entries would take the top; only reorders. */
+    /** Keeps "Reimagined Map" as the orb's left-click option, as later entries would take the top. */
     @Subscribe
     public void onPostMenuSort(PostMenuSort event) {
         if (!ourEntryAdded || client.isMenuOpen()) {
@@ -574,16 +584,29 @@ public class HdMapReforgedPlugin extends Plugin {
         }
         ourEntryAdded = false;
         var entries = client.getMenu().getMenuEntries();
-        int ours = ownEntryIndex(entries);
-        if (ours >= 0 && ours != entries.length - 1) {
-            client.getMenu().setMenuEntries(moveToTop(entries, ours));
+        var sorted = orbMenu(entries, config.hideGameMap());
+        if (!Arrays.equals(sorted, entries)) {
+            client.getMenu().setMenuEntries(sorted);
         }
     }
 
     static final String MENU_OPTION = "Reimagined Map";
 
+    /** The world map orb, also with the minimap minimised (Nomap) and in the other orb layouts (Osm). */
     static boolean isOrb(int widget) {
-        return widget == InterfaceID.Orbs.ORB_WORLDMAP || widget == InterfaceID.Orbs.WORLDMAP;
+        switch (widget) {
+            case InterfaceID.Orbs.ORB_WORLDMAP:
+            case InterfaceID.Orbs.WORLDMAP:
+            case InterfaceID.OrbsNomap.ORB_WORLDMAP:
+            case InterfaceID.OrbsNomap.WORLDMAP:
+            case InterfaceID.OrbsOsm.ORB_WORLDMAP:
+            case InterfaceID.OrbsOsm.WORLDMAP:
+            case InterfaceID.OrbsOsmNomap.ORB_WORLDMAP:
+            case InterfaceID.OrbsOsmNomap.WORLDMAP:
+                return true;
+            default:
+                return false;
+        }
     }
 
     static int ownEntryIndex(MenuEntry[] entries) {
@@ -596,11 +619,20 @@ public class HdMapReforgedPlugin extends Plugin {
         return -1;
     }
 
-    /** The last entry is the top of the menu, which is what a left click does. */
-    static MenuEntry[] moveToTop(MenuEntry[] entries, int index) {
-        var reordered = new ArrayList<>(Arrays.asList(entries));
-        reordered.add(reordered.remove(index));
-        return reordered.toArray(new MenuEntry[0]);
+    /** Ours last, the top of the menu (a left click); without the game's own orb options if hidden. */
+    static MenuEntry[] orbMenu(MenuEntry[] entries, boolean hideGame) {
+        int ours = ownEntryIndex(entries);
+        if (ours < 0) {
+            return entries;
+        }
+        var kept = new ArrayList<MenuEntry>();
+        for (var entry : entries) {
+            if (entry != entries[ours] && !(hideGame && isOrb(entry.getParam1()) && entry.getType() != MenuAction.RUNELITE)) {
+                kept.add(entry);
+            }
+        }
+        kept.add(entries[ours]);
+        return kept.toArray(new MenuEntry[0]);
     }
 
     @Subscribe
